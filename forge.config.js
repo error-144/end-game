@@ -7,6 +7,12 @@ module.exports = {
         extraResource: ['./src/assets/SystemAudioDump'],
         name: 'Cheating Daddy',
         icon: 'src/assets/logo',
+        protocols: [
+            {
+                name: 'Cheating Daddy Account Callback',
+                schemes: ['cheating-daddy'],
+            },
+        ],
         // use `security find-identity -v -p codesigning` to find your identity
         // for macos signing
         // also fuck apple
@@ -52,6 +58,7 @@ module.exports = {
                     description: 'AI assistant for interviews and learning',
                     categories: ['Development', 'Education'],
                     icon: 'src/assets/logo.png',
+                    mimeType: ['x-scheme-handler/cheating-daddy'],
                 },
             },
         },

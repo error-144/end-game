@@ -195,6 +195,97 @@ export class MainView extends LitElement {
             line-height: var(--line-height);
         }
 
+        .account-card {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            padding: 16px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            background: var(--bg-surface);
+        }
+
+        .account-card-header,
+        .account-status-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .account-card-title {
+            color: var(--text-primary);
+            font-size: var(--font-size-sm);
+            font-weight: var(--font-weight-semibold);
+        }
+
+        .account-email,
+        .account-description,
+        .account-message {
+            color: var(--text-secondary);
+            font-size: var(--font-size-xs);
+            line-height: var(--line-height);
+            overflow-wrap: anywhere;
+        }
+
+        .account-message.error {
+            color: var(--danger);
+        }
+
+        .account-message.success {
+            color: var(--success);
+        }
+
+        .account-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .account-button {
+            border: 1px solid var(--border-strong);
+            border-radius: var(--radius-sm);
+            padding: 9px 12px;
+            background: var(--bg-elevated);
+            color: var(--text-primary);
+            font: inherit;
+            font-size: var(--font-size-xs);
+            cursor: pointer;
+        }
+
+        .account-button.primary {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #fff;
+        }
+
+        .account-button:disabled {
+            opacity: 0.55;
+            cursor: wait;
+        }
+
+        .account-switch {
+            border: 0;
+            padding: 0;
+            background: transparent;
+            color: var(--link-color);
+            font: inherit;
+            font-size: var(--font-size-xs);
+            cursor: pointer;
+            text-align: left;
+        }
+
+        .account-badge {
+            border-radius: 999px;
+            padding: 4px 8px;
+            background: rgba(34, 197, 94, 0.12);
+            color: var(--success);
+            font-size: 10px;
+            font-weight: var(--font-weight-semibold);
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+
         .config-checkbox {
             display: flex;
             align-items: flex-start;
@@ -694,7 +785,7 @@ export class MainView extends LitElement {
         onCancelDownload: { type: Function },
         // Internal state
         _mode: { state: true },
-        _token: { state: true },
+        _cloudBackendUrl: { state: true },
         _geminiKey: { state: true },
         _groqKey: { state: true },
         _openaiKey: { state: true },
@@ -702,8 +793,14 @@ export class MainView extends LitElement {
         _groqModel: { state: true },
         _groqImageModel: { state: true },
         _disableGroqThinking: { state: true },
-        _tokenError: { state: true },
         _keyError: { state: true },
+        _accountState: { state: true },
+        _authMode: { state: true },
+        _authEmail: { state: true },
+        _authPassword: { state: true },
+        _authBusy: { state: true },
+        _authMessage: { state: true },
+        _authMessageType: { state: true },
         // Local AI state
         _localLlmModel: { state: true },
         _useCustomLocalLlmModel: { state: true },
@@ -723,7 +820,7 @@ export class MainView extends LitElement {
         this.onCancelDownload = () => {};
 
         this._mode = 'byok';
-        this._token = '';
+        this._cloudBackendUrl = process.env.CHEATING_DADDY_BACKEND_URL || 'ws://127.0.0.1:8787/ws';
         this._geminiKey = '';
         this._groqKey = '';
         this._openaiKey = '';
@@ -731,12 +828,20 @@ export class MainView extends LitElement {
         this._groqModel = 'qwen/qwen3.6-27b';
         this._groqImageModel = 'qwen/qwen3.6-27b';
         this._disableGroqThinking = true;
-        this._tokenError = false;
         this._keyError = false;
+        this._accountState = { authenticated: false, user: null, subscription: null };
+        this._authMode = 'login';
+        this._authEmail = '';
+        this._authPassword = '';
+        this._authBusy = false;
+        this._authMessage = '';
+        this._authMessageType = '';
         this._showLocalHelp = false;
         this._localLlmModel = 'unsloth/Qwen3.5-4B-GGUF:Q4_K_M';
         this._useCustomLocalLlmModel = false;
         this._whisperModel = 'tiny.en';
+
+        this._loadAccount();
 
         this._animId = null;
         this._time = 0;
@@ -755,15 +860,10 @@ export class MainView extends LitElement {
                 cheatingDaddy.storage.getCredentials().catch(() => ({})),
             ]);
 
-            const storedMode = prefs.providerMode || 'byok';
-            this._mode = storedMode === 'cloud' ? 'byok' : storedMode;
-
-            if (storedMode === 'cloud') {
-                await cheatingDaddy.storage.updatePreference('providerMode', this._mode);
-            }
+            this._mode = prefs.providerMode || 'byok';
+            this._cloudBackendUrl = prefs.cloudBackendUrl || this._cloudBackendUrl;
 
             // Load keys
-            this._token = creds.cloudToken || '';
             this._geminiKey = (await cheatingDaddy.storage.getApiKey().catch(() => '')) || '';
             this._groqKey = (await cheatingDaddy.storage.getGroqApiKey().catch(() => '')) || '';
             this._openaiKey = creds.openaiKey || '';
@@ -783,14 +883,154 @@ export class MainView extends LitElement {
         }
     }
 
+    async _loadAccount() {
+        try {
+            this._accountState = await cheatingDaddy.account.getState();
+            this._authMessage = this._accountState.error || '';
+            this._authMessageType = this._accountState.error ? 'error' : '';
+        } catch (error) {
+            this._accountState = { authenticated: false, user: null, subscription: null };
+            this._authMessage = error.message || 'Could not connect to the account service';
+            this._authMessageType = 'error';
+        }
+        this.requestUpdate();
+    }
+
+    async _submitAccountForm() {
+        const email = this._authEmail.trim();
+        const password = this._authPassword;
+        if ((this._authMode !== 'reset' && !email) || (this._authMode !== 'forgot' && !password)) {
+            this._authMessage = this._authMode === 'reset' ? 'Enter a new password to continue.' : this._authMode === 'forgot' ? 'Enter your email address to continue.' : 'Enter your email and password to continue.';
+            this._authMessageType = 'error';
+            return;
+        }
+        if ((this._authMode === 'signup' || this._authMode === 'reset') && password.length < 8) {
+            this._authMessage = 'Use a password with at least 8 characters.';
+            this._authMessageType = 'error';
+            return;
+        }
+
+        this._authBusy = true;
+        this._authMessage = '';
+        this._authMessageType = '';
+        try {
+            if (this._authMode === 'forgot') {
+                await cheatingDaddy.account.requestPasswordReset(email);
+                this._authPassword = '';
+                this._authMessage = 'If an account exists for that email, a password reset link is on its way.';
+                this._authMessageType = 'success';
+            } else if (this._authMode === 'reset') {
+                await cheatingDaddy.account.updatePassword(password);
+                this._authPassword = '';
+                this._authMode = 'login';
+                await this._loadAccount();
+                this._authMessage = 'Your password has been updated.';
+                this._authMessageType = 'success';
+            } else if (this._authMode === 'signup') {
+                const result = await cheatingDaddy.account.signUp(email, password);
+                this._authPassword = '';
+                this._authMessage = result.confirmationRequired
+                    ? `Check ${result.email} for the verification link. It will return you to this app.`
+                    : 'Your account is ready.';
+                this._authMessageType = 'success';
+                if (!result.confirmationRequired) {
+                    await this._loadAccount();
+                    this._authMessage = this._accountState.error || 'Your account is ready.';
+                    this._authMessageType = this._accountState.error ? 'error' : 'success';
+                }
+            } else {
+                await cheatingDaddy.account.signIn(email, password);
+                this._authPassword = '';
+                await this._loadAccount();
+                this._authMessage = this._accountState.error || 'Signed in successfully.';
+                this._authMessageType = this._accountState.error ? 'error' : 'success';
+            }
+        } catch (error) {
+            this._authMessage = error.message || 'Could not complete account request.';
+            this._authMessageType = 'error';
+        } finally {
+            this._authBusy = false;
+            this.requestUpdate();
+        }
+    }
+
+    async _startCheckout() {
+        this._authBusy = true;
+        this._authMessage = '';
+        try {
+            await cheatingDaddy.account.startCheckout();
+            this._authMessage = 'Checkout opened in your browser. Return here after payment.';
+            this._authMessageType = 'success';
+        } catch (error) {
+            this._authMessage = error.message || 'Could not start checkout.';
+            this._authMessageType = 'error';
+        } finally {
+            this._authBusy = false;
+            this.requestUpdate();
+        }
+    }
+
+    async _openBillingPortal() {
+        this._authBusy = true;
+        try {
+            await cheatingDaddy.account.openBillingPortal();
+            this._authMessage = 'Subscription settings opened in your browser.';
+            this._authMessageType = 'success';
+        } catch (error) {
+            this._authMessage = error.message || 'Could not open subscription settings.';
+            this._authMessageType = 'error';
+        } finally {
+            this._authBusy = false;
+            this.requestUpdate();
+        }
+    }
+
+    async _signOutAccount() {
+        this._authBusy = true;
+        try {
+            await cheatingDaddy.account.signOut();
+            this._accountState = { authenticated: false, user: null, subscription: null };
+            this._authMessage = 'You have signed out.';
+            this._authMessageType = 'success';
+        } catch (error) {
+            this._authMessage = error.message || 'Could not sign out.';
+            this._authMessageType = 'error';
+        } finally {
+            this._authBusy = false;
+            this.requestUpdate();
+        }
+    }
+
     connectedCallback() {
         super.connectedCallback();
         document.addEventListener('keydown', this.boundKeydownHandler);
+        this._removeAccountStateListener = cheatingDaddy.account.onStateChanged(state => {
+            this._accountState = state;
+            this._authMessage = state.error || '';
+            this._authMessageType = state.error ? 'error' : '';
+            if (state.authenticated) this._authPassword = '';
+            this.requestUpdate();
+        });
+        this._removeAccountErrorListener = cheatingDaddy.account.onCallbackError(message => {
+            this._authMessage = message;
+            this._authMessageType = 'error';
+            this.requestUpdate();
+        });
+        this._removePasswordRecoveryListener = cheatingDaddy.account.onPasswordRecovery(() => {
+            this._authMode = 'reset';
+            this._authPassword = '';
+            this._authMessage = 'Choose a new password for your account.';
+            this._authMessageType = 'success';
+            this.requestUpdate();
+        });
     }
 
     disconnectedCallback() {
         super.disconnectedCallback();
         document.removeEventListener('keydown', this.boundKeydownHandler);
+        this._removeAccountStateListener?.();
+        this._removeAccountErrorListener?.();
+        this._removePasswordRecoveryListener?.();
         if (this._animId) cancelAnimationFrame(this._animId);
     }
 
@@ -916,20 +1156,14 @@ export class MainView extends LitElement {
 
     async _saveMode(mode) {
         this._mode = mode;
-        this._tokenError = false;
         this._keyError = false;
         await cheatingDaddy.storage.updatePreference('providerMode', mode);
         this.requestUpdate();
     }
 
-    async _saveToken(val) {
-        this._token = val;
-        this._tokenError = false;
-        try {
-            const creds = await cheatingDaddy.storage.getCredentials().catch(() => ({}));
-            await cheatingDaddy.storage.setCredentials({ ...creds, cloudToken: val });
-        } catch (e) {}
-        this.requestUpdate();
+    async _saveCloudBackendUrl(value) {
+        this._cloudBackendUrl = value.trim();
+        await cheatingDaddy.storage.updatePreference('cloudBackendUrl', this._cloudBackendUrl);
     }
 
     async _saveGeminiKey(val) {
@@ -1032,16 +1266,34 @@ export class MainView extends LitElement {
             if (!this._localLlmModel.trim()) {
                 return;
             }
+        } else if (this._mode === 'cloud') {
+            if (!this._accountState.authenticated) {
+                this._authMessage = 'Log in or create an account before starting Cloud AI.';
+                this._authMessageType = 'error';
+                return;
+            }
+            const subscription = this._accountState.subscription || {};
+            const freeTrialsRemaining = Number(subscription.freeTrialsRemaining) || 0;
+            if (!subscription.active && freeTrialsRemaining <= 0) {
+                this._authMessage = 'Your free trials are used. Choose a subscription plan to start Cloud AI.';
+                this._authMessageType = 'error';
+                return;
+            }
         }
 
         this.onStart();
     }
 
     triggerApiKeyError() {
-        this._keyError = this._mode !== 'local';
+        if (this._mode === 'cloud') {
+            this._authMessage = 'Could not start Cloud AI. Check your account, subscription, and connection, then try again.';
+            this._authMessageType = 'error';
+            this.requestUpdate();
+            return;
+        }
+        this._keyError = this._mode === 'byok';
         this.requestUpdate();
         setTimeout(() => {
-            this._tokenError = false;
             this._keyError = false;
             this.requestUpdate();
         }, 2000);
@@ -1143,8 +1395,124 @@ export class MainView extends LitElement {
     }
 
     // ── Cloud mode ──
-    // Cloud UI intentionally disabled. Backend cloud wiring is still present in
-    // the codebase, but the renderer no longer exposes this setup path.
+
+    _renderCloudMode() {
+        const account = this._accountState || {};
+        const subscription = account.subscription || {};
+        const isSubscribed = account.authenticated && subscription.active === true;
+        const freeTrialsRemaining = Number(subscription.freeTrialsRemaining) || 0;
+        const billingPending = account.billingPending === true;
+        const periodEnd = subscription.current_period_end ? new Date(subscription.current_period_end).toLocaleDateString() : '';
+
+        return html`
+            <section class="account-card" aria-label="Cloud account">
+                <div class="account-card-header">
+                    <span class="account-card-title">${this._authMode === 'reset' ? 'Set a new password' : account.authenticated ? 'Your account' : this._authMode === 'signup' ? 'Create your account' : this._authMode === 'forgot' ? 'Reset your password' : 'Log in to Cloud AI'}</span>
+                    ${isSubscribed ? html`<span class="account-badge">Active plan</span>` : ''}
+                </div>
+
+                ${account.authenticated && this._authMode !== 'reset'
+                    ? html`
+                          <div class="account-email">Signed in as ${account.user?.email || 'your account'}</div>
+                          ${account.error
+                              ? html`<div class="account-description">Account status is temporarily unavailable. Refresh and try again.</div>`
+                              : isSubscribed
+                                ? html`<div class="account-description">Your subscription is active${periodEnd ? html` through ${periodEnd}` : ''}.</div>`
+                                : billingPending
+                                  ? html`<div class="account-description">Confirming your subscription. This can take a moment after checkout.</div>`
+                                  : freeTrialsRemaining > 0
+                                    ? html`<div class="account-description">${freeTrialsRemaining} free five-minute Cloud AI ${freeTrialsRemaining === 1 ? 'session' : 'sessions'} remaining. Subscribe for longer sessions.</div>`
+                                    : html`<div class="account-description">Your free trials are used. Subscribe to unlock Cloud AI. Subscription access is checked securely by the backend.</div>`}
+                          <div class="account-actions">
+                              ${isSubscribed
+                                  ? html`<button class="account-button" ?disabled=${this._authBusy} @click=${() => this._openBillingPortal()}>Manage subscription</button>`
+                                  : account.error || billingPending
+                                    ? ''
+                                    : html`<button class="account-button primary" ?disabled=${this._authBusy} @click=${() => this._startCheckout()}>Choose plan</button>`}
+                              <button class="account-button" ?disabled=${this._authBusy} @click=${() => this._loadAccount()}>Refresh status</button>
+                              <button class="account-button" ?disabled=${this._authBusy} @click=${() => this._signOutAccount()}>Log out</button>
+                          </div>
+                      `
+                    : html`
+                          ${this._authMode !== 'reset'
+                              ? html`<div class="form-group">
+                                    <label class="form-label" for="cloud-account-email">Email</label>
+                                    <input
+                                        id="cloud-account-email"
+                                        type="email"
+                                        autocomplete="email"
+                                        placeholder="you@example.com"
+                                        .value=${this._authEmail}
+                                        @input=${event => (this._authEmail = event.target.value)}
+                                        @keydown=${event => event.key === 'Enter' && this._authMode === 'forgot' && this._submitAccountForm()}
+                                    />
+                                </div>`
+                              : ''}
+                          ${this._authMode !== 'forgot'
+                              ? html`<div class="form-group">
+                                    <label class="form-label" for="cloud-account-password">${this._authMode === 'reset' ? 'New password' : 'Password'}</label>
+                                    <input
+                                        id="cloud-account-password"
+                                        type="password"
+                                        autocomplete=${this._authMode === 'signup' || this._authMode === 'reset' ? 'new-password' : 'current-password'}
+                                        placeholder=${this._authMode === 'signup' || this._authMode === 'reset' ? 'At least 8 characters' : 'Your password'}
+                                        .value=${this._authPassword}
+                                        @input=${event => (this._authPassword = event.target.value)}
+                                        @keydown=${event => event.key === 'Enter' && this._submitAccountForm()}
+                                    />
+                                </div>`
+                              : ''}
+                          <div class="account-actions">
+                              <button class="account-button primary" ?disabled=${this._authBusy} @click=${() => this._submitAccountForm()}>
+                                  ${this._authBusy ? 'Please wait…' : this._authMode === 'signup' ? 'Create account' : this._authMode === 'forgot' ? 'Send reset link' : this._authMode === 'reset' ? 'Update password' : 'Log in'}
+                              </button>
+                          </div>
+                          <button
+                              class="account-switch"
+                              @click=${() => {
+                                  this._authMode = this._authMode === 'signup' ? 'login' : this._authMode === 'login' ? 'signup' : 'login';
+                                  this._authMessage = '';
+                              }}
+                          >
+                              ${this._authMode === 'signup' ? 'Already have an account? Log in' : this._authMode === 'login' ? 'New to Cloud AI? Create an account' : 'Back to log in'}
+                          </button>
+                          ${this._authMode === 'login'
+                              ? html`<button class="account-switch" @click=${() => { this._authMode = 'forgot'; this._authMessage = ''; }}>Forgot your password?</button>`
+                              : ''}
+                          ${this._authMode === 'signup' ? html`<div class="account-description">After signing up, verify your email. The link will bring you back to this app.</div>` : ''}
+                      `}
+
+                ${this._authMessage ? html`<div class="account-message ${this._authMessageType}">${this._authMessage}</div>` : ''}
+            </section>
+
+            ${account.authenticated && !account.error && !isSubscribed && !billingPending && freeTrialsRemaining <= 0
+                ? html`<div class="account-description">One plan is available at launch. Usage limits can be added later.</div>`
+                : ''}
+
+            <details class="config-section">
+                <summary class="config-summary">
+                    <span class="config-summary-text">
+                        <span class="config-summary-title">Connection settings</span>
+                        <span class="config-summary-description">Use the local or staging backend when developing</span>
+                    </span>
+                    ${this._renderConfigChevron()}
+                </summary>
+                <div class="config-content">
+                    <div class="form-group">
+                        <label class="form-label">Backend WebSocket URL</label>
+                        <input type="url" placeholder="wss://your-service.run.app/ws" .value=${this._cloudBackendUrl} @input=${event => this._saveCloudBackendUrl(event.target.value)} />
+                        <div class="form-hint">Use ws://127.0.0.1:8787/ws for local development; deployed services must use wss://.</div>
+                    </div>
+                </div>
+            </details>
+
+            ${this._renderStartButton()}
+            <div class="mode-links">
+                <button class="mode-link" @click=${() => this._saveMode('byok')}>Use own API keys</button>
+                <button class="mode-link" @click=${() => this._saveMode('local')}>Use local AI</button>
+            </div>
+        `;
+    }
 
     // ── BYOK mode ──
 
@@ -1235,9 +1603,8 @@ export class MainView extends LitElement {
 
             ${this._renderStartButton()} ${this._renderDivider()}
 
-            <!-- Cloud promo intentionally removed from the active UI. -->
-
             <div class="mode-links">
+                <button class="mode-link" @click=${() => this._saveMode('cloud')}>Use Cloud AI</button>
                 <button class="mode-link" @click=${() => this._saveMode('local')}>Use local AI</button>
             </div>
         `;
@@ -1308,9 +1675,8 @@ export class MainView extends LitElement {
 
             ${this._renderStartButton()} ${this._renderDivider()}
 
-            <!-- Cloud promo intentionally removed from the active UI. -->
-
             <div class="mode-links">
+                <button class="mode-link" @click=${() => this._saveMode('cloud')}>Use Cloud AI</button>
                 <button class="mode-link" @click=${() => this._saveMode('byok')}>Use own API keys</button>
             </div>
         `;
@@ -1339,12 +1705,15 @@ export class MainView extends LitElement {
                                   <button class="help-btn" @click=${this._openLocalHelp} aria-label="Open Local AI help">${helpIcon}</button>
                               </div>
                           `
-                        : html` <div class="page-title">${html`Cheating Daddy <span class="mode-suffix">BYOK</span>`}</div> `
+                        : html` <div class="page-title">Cheating Daddy <span class="mode-suffix">${this._mode === 'cloud' ? 'Cloud AI' : 'BYOK'}</span></div> `
                 }
-                <div class="page-subtitle">${this._mode === 'byok' ? 'Bring your own API keys' : 'Run models locally on your machine'}</div>
+                <div class="page-subtitle">
+                    ${this._mode === 'byok' ? 'Bring your own API keys' : this._mode === 'cloud' ? 'Connect through your cloud backend' : 'Run models locally on your machine'}
+                </div>
 
-                <!-- Cloud mode render branch intentionally disabled. -->
-                ${this._mode === 'byok' ? this._renderByokMode() : ''} ${this._mode === 'local' ? this._renderLocalMode() : ''}
+                ${this._mode === 'byok' ? this._renderByokMode() : ''}
+                ${this._mode === 'cloud' ? this._renderCloudMode() : ''}
+                ${this._mode === 'local' ? this._renderLocalMode() : ''}
             </div>
             ${this._mode === 'local' && this._showLocalHelp ? this._renderLocalHelp(closeIcon) : ''}
         `;

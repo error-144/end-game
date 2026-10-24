@@ -31,6 +31,12 @@ A real-time AI assistant that provides contextual help during video calls, inter
 2. **Install Dependencies**: `npm install`
 3. **Run the App**: `npm start`
 
+## Self-hosted cloud backend
+
+The app includes an initial Cloud Run-ready WebSocket backend. It owns the Gemini API key and receives audio chunks, typed messages, and screenshots over the same app-to-backend WebSocket. For local setup and deployment, see [`backend/README.md`](backend/README.md).
+
+Cloud AI uses per-user Supabase Auth, server-side subscription checks, and a limited free-trial allowance. Billing and trial settings still need to be configured before a public release; production reconnect handling and broader usage limits remain future work.
+
 ## Usage
 
 1. Enter your Gemini API key in the main window

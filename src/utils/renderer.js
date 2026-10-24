@@ -174,15 +174,15 @@ async function cancelLocalInitialization() {
 }
 
 async function initializeCloud(profile = 'interview') {
-    const creds = await storage.getCredentials();
-    const token = creds.cloudToken;
-    if (!token || !token.trim()) {
-        cheatingDaddy.setStatus('error');
-        return false;
-    }
-
     const prefs = await storage.getPreferences();
-    const success = await ipcRenderer.invoke('initialize-cloud', token, profile, prefs.customPrompt || '');
+    const success = await ipcRenderer.invoke(
+        'initialize-cloud',
+        profile,
+        prefs.customPrompt || '',
+        prefs.selectedLanguage || 'en-US',
+        prefs.googleSearchEnabled === true,
+        prefs.cloudBackendUrl || process.env.CHEATING_DADDY_BACKEND_URL || 'ws://127.0.0.1:8787/ws'
+    );
     if (success) {
         cheatingDaddy.setStatus('Live');
         return true;
@@ -1096,6 +1096,39 @@ const cheatingDaddy = {
 
     // Storage API
     storage,
+
+    // Account and subscription operations stay in the Electron main process.
+    account: {
+        getState: () => ipcRenderer.invoke('account:get-state'),
+        signUp: (email, password) => ipcRenderer.invoke('account:sign-up', email, password),
+        signIn: (email, password) => ipcRenderer.invoke('account:sign-in', email, password),
+        requestPasswordReset: email => ipcRenderer.invoke('account:request-password-reset', email),
+        updatePassword: password => ipcRenderer.invoke('account:update-password', password),
+        signOut: () => ipcRenderer.invoke('account:sign-out'),
+        startCheckout: () => ipcRenderer.invoke('account:checkout'),
+        openBillingPortal: () => ipcRenderer.invoke('account:portal'),
+        getTrialStatus: () => ipcRenderer.invoke('account:get-trial-status'),
+        onTrialStatus(callback) {
+            const listener = (_event, data) => callback(data);
+            ipcRenderer.on('trial-status', listener);
+            return () => ipcRenderer.removeListener('trial-status', listener);
+        },
+        onStateChanged(callback) {
+            const listener = (_event, state) => callback(state);
+            ipcRenderer.on('account:state-changed', listener);
+            return () => ipcRenderer.removeListener('account:state-changed', listener);
+        },
+        onCallbackError(callback) {
+            const listener = (_event, message) => callback(message);
+            ipcRenderer.on('account:callback-error', listener);
+            return () => ipcRenderer.removeListener('account:callback-error', listener);
+        },
+        onPasswordRecovery(callback) {
+            const listener = () => callback();
+            ipcRenderer.on('account:password-recovery', listener);
+            return () => ipcRenderer.removeListener('account:password-recovery', listener);
+        },
+    },
 
     // Theme API
     theme,

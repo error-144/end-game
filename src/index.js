@@ -5,10 +5,41 @@ if (require('electron-squirrel-startup')) {
 const { app, BrowserWindow, shell, ipcMain } = require('electron');
 const { createWindow, updateGlobalShortcuts } = require('./utils/window');
 const { setupGeminiIpcHandlers, stopMacOSAudioCapture, sendToRenderer } = require('./utils/gemini');
+const account = require('./utils/account');
 const storage = require('./storage');
 
 const geminiSessionRef = { current: null };
 let mainWindow = null;
+let pendingDeepLink = '';
+
+if (process.defaultApp && process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient(account.APP_PROTOCOL, process.execPath, [require('node:path').resolve(process.argv[1])]);
+} else {
+    app.setAsDefaultProtocolClient(account.APP_PROTOCOL);
+}
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) app.quit();
+
+function handleDeepLink(url) {
+    if (typeof url !== 'string' || !url.startsWith(`${account.APP_PROTOCOL}://`)) return;
+    if (BrowserWindow.getAllWindows().length === 0) pendingDeepLink = url;
+    else account.registerAuthDeepLink(url);
+    for (const window of BrowserWindow.getAllWindows()) {
+        if (window.isMinimized()) window.restore();
+        window.focus();
+    }
+}
+
+app.on('open-url', (event, url) => {
+    event.preventDefault();
+    handleDeepLink(url);
+});
+
+app.on('second-instance', (_event, commandLine) => {
+    const url = commandLine.find(argument => argument.startsWith(`${account.APP_PROTOCOL}://`));
+    if (url) handleDeepLink(url);
+});
 
 function createMainWindow() {
     mainWindow = createWindow(sendToRenderer, geminiSessionRef);
@@ -16,6 +47,7 @@ function createMainWindow() {
 }
 
 app.whenReady().then(async () => {
+    if (!gotSingleInstanceLock) return;
     // Initialize storage (checks version, resets if needed)
     storage.initializeStorage();
 
@@ -26,9 +58,17 @@ app.whenReady().then(async () => {
     }
 
     createMainWindow();
+    account.setupAccountIpcHandlers();
+    account.initializeAccount();
     setupGeminiIpcHandlers(geminiSessionRef);
     setupStorageIpcHandlers();
     setupGeneralIpcHandlers();
+
+    const startupDeepLink = process.argv.find(argument => argument.startsWith(`${account.APP_PROTOCOL}://`));
+    if (startupDeepLink || pendingDeepLink) {
+        account.registerAuthDeepLink(startupDeepLink || pendingDeepLink);
+        pendingDeepLink = '';
+    }
 });
 
 app.on('window-all-closed', () => {

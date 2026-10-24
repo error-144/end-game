@@ -23,6 +23,7 @@ const DEFAULT_CREDENTIALS = {
 const DEFAULT_PREFERENCES = {
     customPrompt: '',
     providerMode: 'byok',
+    cloudBackendUrl: process.env.CHEATING_DADDY_BACKEND_URL || 'ws://127.0.0.1:8787/ws',
     selectedProfile: 'interview',
     selectedLanguage: 'en-US',
     selectedScreenshotInterval: '5',

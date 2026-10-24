@@ -7,6 +7,7 @@ import { AssistantView } from '../views/AssistantView.js';
 import { OnboardingView } from '../views/OnboardingView.js';
 import { AICustomizeView } from '../views/AICustomizeView.js';
 import { FeedbackView } from '../views/FeedbackView.js';
+import { AuthView } from '../views/AuthView.js';
 
 export class CheatingDaddyApp extends LitElement {
     static styles = css`
@@ -388,6 +389,8 @@ export class CheatingDaddyApp extends LitElement {
         _updateAvailable: { state: true },
         _whisperDownloading: { state: true },
         _localAiDownloadProgress: { state: true },
+        _accountState: { state: true },
+        _passwordRecoveryPending: { state: true },
     };
 
     constructor() {
@@ -415,6 +418,11 @@ export class CheatingDaddyApp extends LitElement {
         this._whisperDownloading = false;
         this._localAiDownloadProgress = { active: false, label: '', percentage: null };
         this._localVersion = '';
+        this._accountState = null;
+        this._passwordRecoveryPending = false;
+        this._accountStateListener = null;
+        this._passwordRecoveryListener = null;
+        this._cloudTrialExpiredListener = null;
 
         this._loadFromStorage();
         this._checkForUpdates();
@@ -447,7 +455,8 @@ export class CheatingDaddyApp extends LitElement {
         try {
             const [config, prefs] = await Promise.all([cheatingDaddy.storage.getConfig(), cheatingDaddy.storage.getPreferences()]);
 
-            this.currentView = config.onboarded ? 'main' : 'onboarding';
+            // Route to auth first if not yet onboarded, then to onboarding after sign-in
+            this.currentView = config.onboarded ? 'main' : 'auth';
             this.selectedProfile = prefs.selectedProfile || 'interview';
             this.selectedLanguage = prefs.selectedLanguage || 'en-US';
             this.selectedScreenshotInterval = prefs.selectedScreenshotInterval || '5';
@@ -481,6 +490,27 @@ export class CheatingDaddyApp extends LitElement {
             ipcRenderer.on('local-ai-download-progress', (_, progress) => {
                 this._localAiDownloadProgress = progress;
             });
+            // Account auth state broadcast from main process
+            this._accountStateListener = (_event, state) => {
+                this._accountState = state;
+                if (state.passwordRecoveryPending) {
+                    this._passwordRecoveryPending = true;
+                    this.currentView = 'auth';
+                }
+                if (state.authenticated && this.currentView === 'auth' && !this._passwordRecoveryPending) {
+                    this.handleAuthComplete();
+                }
+                this.requestUpdate();
+            };
+            this._passwordRecoveryListener = () => {
+                this._passwordRecoveryPending = true;
+                this.currentView = 'auth';
+                this.requestUpdate();
+            };
+            this._cloudTrialExpiredListener = () => this.handleCloudTrialExpired();
+            ipcRenderer.on('account:state-changed', this._accountStateListener);
+            ipcRenderer.on('account:password-recovery', this._passwordRecoveryListener);
+            ipcRenderer.on('cloud-trial-expired', this._cloudTrialExpiredListener);
         }
     }
 
@@ -496,6 +526,9 @@ export class CheatingDaddyApp extends LitElement {
             ipcRenderer.removeAllListeners('reconnect-failed');
             ipcRenderer.removeAllListeners('whisper-downloading');
             ipcRenderer.removeAllListeners('local-ai-download-progress');
+            if (this._accountStateListener) ipcRenderer.removeListener('account:state-changed', this._accountStateListener);
+            if (this._passwordRecoveryListener) ipcRenderer.removeListener('account:password-recovery', this._passwordRecoveryListener);
+            if (this._cloudTrialExpiredListener) ipcRenderer.removeListener('cloud-trial-expired', this._cloudTrialExpiredListener);
         }
     }
 
@@ -597,18 +630,9 @@ export class CheatingDaddyApp extends LitElement {
 
     async handleStart() {
         const prefs = await cheatingDaddy.storage.getPreferences();
-        const providerMode = prefs.providerMode === 'cloud' ? 'byok' : prefs.providerMode || 'byok';
+        const providerMode = prefs.providerMode || 'byok';
 
         if (providerMode === 'cloud') {
-            const creds = await cheatingDaddy.storage.getCredentials();
-            if (!creds.cloudToken || creds.cloudToken.trim() === '') {
-                const mainView = this.shadowRoot.querySelector('main-view');
-                if (mainView && mainView.triggerApiKeyError) {
-                    mainView.triggerApiKeyError();
-                }
-                return;
-            }
-
             const success = await cheatingDaddy.initializeCloud(this.selectedProfile);
             if (!success) {
                 const mainView = this.shadowRoot.querySelector('main-view');
@@ -721,6 +745,41 @@ export class CheatingDaddyApp extends LitElement {
         this.currentView = 'main';
     }
 
+    handleAuthComplete() {
+        this._passwordRecoveryPending = false;
+        // After successful sign-in/sign-up, go to onboarding (first time) or main
+        cheatingDaddy.storage.getConfig()
+            .then(config => {
+                this.currentView = config.onboarded ? 'main' : 'onboarding';
+            })
+            .catch(() => {
+                this.currentView = 'onboarding';
+            });
+    }
+
+    handleAuthSkip() {
+        // Allow bypassing auth entirely — go straight to onboarding/main
+        cheatingDaddy.storage.getConfig()
+            .then(config => {
+                this.currentView = config.onboarded ? 'main' : 'onboarding';
+            })
+            .catch(() => {
+                this.currentView = 'onboarding';
+            });
+    }
+
+    async handleCloudTrialExpired() {
+        if (this.currentView !== 'assistant' || !this.sessionActive) return;
+        await cheatingDaddy.stopCapture();
+        if (window.require) {
+            const { ipcRenderer } = window.require('electron');
+            await ipcRenderer.invoke('close-session').catch(() => {});
+        }
+        this.sessionActive = false;
+        this._stopTimer();
+        this.currentView = 'main';
+    }
+
     updated(changedProperties) {
         super.updated(changedProperties);
 
@@ -740,6 +799,15 @@ export class CheatingDaddyApp extends LitElement {
 
     renderCurrentView() {
         switch (this.currentView) {
+            case 'auth':
+                return html`
+                    <auth-view
+                        .initialMode=${this._passwordRecoveryPending ? 'update-password' : 'signin'}
+                        .onAuthenticated=${() => this.handleAuthComplete()}
+                        .onSkip=${() => this.handleAuthSkip()}
+                    ></auth-view>
+                `;
+
             case 'onboarding':
                 return html`
                     <onboarding-view .onComplete=${() => this.handleOnboardingComplete()} .onClose=${() => this.handleClose()}></onboarding-view>
@@ -967,8 +1035,8 @@ export class CheatingDaddyApp extends LitElement {
     }
 
     render() {
-        // Onboarding is fullscreen, no sidebar
-        if (this.currentView === 'onboarding') {
+        // Auth and Onboarding are fullscreen, no sidebar
+        if (this.currentView === 'auth' || this.currentView === 'onboarding') {
             return html` <div class="fullscreen">${this.renderCurrentView()}</div> `;
         }
 

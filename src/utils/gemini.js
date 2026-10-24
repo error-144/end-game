@@ -1,4 +1,5 @@
 const { GoogleGenAI, Modality } = require('@google/genai');
+const account = require('./account');
 const { BrowserWindow, ipcMain } = require('electron');
 const { spawn } = require('child_process');
 const { saveDebugAudio } = require('../audioUtils');
@@ -1053,15 +1054,21 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
     // Store the geminiSessionRef globally for reconnection access
     global.geminiSessionRef = geminiSessionRef;
 
-    ipcMain.handle('initialize-cloud', async (event, token, profile, userContext) => {
+    ipcMain.handle('initialize-cloud', async (event, profile, userContext, language, googleSearchEnabled, backendUrl) => {
         try {
+            const token = await account.getAccessToken();
+            if (!token) throw new Error('Sign in to your account to use Cloud AI');
             currentProviderMode = 'cloud';
             initializeNewSession(profile);
-            setOnTurnComplete((transcription, response) => {
-                saveConversationTurn(transcription, response);
+            setOnTurnComplete((transcription, response, source) => {
+                if (source === 'image') {
+                    saveScreenAnalysis(transcription, response, 'cloud');
+                } else {
+                    saveConversationTurn(transcription, response);
+                }
             });
             sendToRenderer('session-initializing', true);
-            await connectCloud(token, profile, userContext);
+            await connectCloud(token, profile, userContext, language, googleSearchEnabled, backendUrl);
             sendToRenderer('session-initializing', false);
             return true;
         } catch (err) {
@@ -1185,11 +1192,8 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
             process.stdout.write('!');
 
             if (currentProviderMode === 'cloud') {
-                const sent = sendCloudImage(data);
-                if (!sent) {
-                    return { success: false, error: 'Cloud connection not active' };
-                }
-                return { success: true, model: 'cloud' };
+                const result = await sendCloudImage(data, prompt);
+                return result ? { ...result, model: 'cloud' } : { success: false, error: 'Cloud connection not active' };
             }
 
             if (currentProviderMode === 'local') {
