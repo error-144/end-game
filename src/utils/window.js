@@ -42,7 +42,7 @@ function createWindow(sendToRenderer, geminiSessionRef) {
         { useSystemPicker: true }
     );
 
-    mainWindow.setContentProtection(true);
+    // mainWindow.setContentProtection(true);     ------> This should be enabled for Production 
     if (process.platform === 'win32') {
         mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
         mainWindow.setAlwaysOnTop(true, 'screen-saver', 1);
