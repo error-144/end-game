@@ -860,7 +860,7 @@ export class MainView extends LitElement {
                 cheatingDaddy.storage.getCredentials().catch(() => ({})),
             ]);
 
-            this._mode = prefs.providerMode || 'byok';
+            this._mode = 'cloud';
             this._cloudBackendUrl = prefs.cloudBackendUrl || this._cloudBackendUrl;
 
             // Load keys
@@ -900,7 +900,12 @@ export class MainView extends LitElement {
         const email = this._authEmail.trim();
         const password = this._authPassword;
         if ((this._authMode !== 'reset' && !email) || (this._authMode !== 'forgot' && !password)) {
-            this._authMessage = this._authMode === 'reset' ? 'Enter a new password to continue.' : this._authMode === 'forgot' ? 'Enter your email address to continue.' : 'Enter your email and password to continue.';
+            this._authMessage =
+                this._authMode === 'reset'
+                    ? 'Enter a new password to continue.'
+                    : this._authMode === 'forgot'
+                      ? 'Enter your email address to continue.'
+                      : 'Enter your email and password to continue.';
             this._authMessageType = 'error';
             return;
         }
@@ -1407,87 +1412,132 @@ export class MainView extends LitElement {
         return html`
             <section class="account-card" aria-label="Cloud account">
                 <div class="account-card-header">
-                    <span class="account-card-title">${this._authMode === 'reset' ? 'Set a new password' : account.authenticated ? 'Your account' : this._authMode === 'signup' ? 'Create your account' : this._authMode === 'forgot' ? 'Reset your password' : 'Log in to Cloud AI'}</span>
+                    <span class="account-card-title"
+                        >${this._authMode === 'reset' ? 'Set a new password' : account.authenticated ? 'Your account' : this._authMode === 'signup' ? 'Create your account' : this._authMode === 'forgot' ? 'Reset your password' : 'Log in to Cloud AI'}</span
+                    >
                     ${isSubscribed ? html`<span class="account-badge">Active plan</span>` : ''}
                 </div>
 
-                ${account.authenticated && this._authMode !== 'reset'
-                    ? html`
-                          <div class="account-email">Signed in as ${account.user?.email || 'your account'}</div>
-                          ${account.error
-                              ? html`<div class="account-description">Account status is temporarily unavailable. Refresh and try again.</div>`
-                              : isSubscribed
-                                ? html`<div class="account-description">Your subscription is active${periodEnd ? html` through ${periodEnd}` : ''}.</div>`
-                                : billingPending
-                                  ? html`<div class="account-description">Confirming your subscription. This can take a moment after checkout.</div>`
-                                  : freeTrialsRemaining > 0
-                                    ? html`<div class="account-description">${freeTrialsRemaining} free five-minute Cloud AI ${freeTrialsRemaining === 1 ? 'session' : 'sessions'} remaining. Subscribe for longer sessions.</div>`
-                                    : html`<div class="account-description">Your free trials are used. Subscribe to unlock Cloud AI. Subscription access is checked securely by the backend.</div>`}
-                          <div class="account-actions">
-                              ${isSubscribed
-                                  ? html`<button class="account-button" ?disabled=${this._authBusy} @click=${() => this._openBillingPortal()}>Manage subscription</button>`
-                                  : account.error || billingPending
-                                    ? ''
-                                    : html`<button class="account-button primary" ?disabled=${this._authBusy} @click=${() => this._startCheckout()}>Choose plan</button>`}
-                              <button class="account-button" ?disabled=${this._authBusy} @click=${() => this._loadAccount()}>Refresh status</button>
-                              <button class="account-button" ?disabled=${this._authBusy} @click=${() => this._signOutAccount()}>Log out</button>
-                          </div>
-                      `
-                    : html`
-                          ${this._authMode !== 'reset'
-                              ? html`<div class="form-group">
-                                    <label class="form-label" for="cloud-account-email">Email</label>
-                                    <input
-                                        id="cloud-account-email"
-                                        type="email"
-                                        autocomplete="email"
-                                        placeholder="you@example.com"
-                                        .value=${this._authEmail}
-                                        @input=${event => (this._authEmail = event.target.value)}
-                                        @keydown=${event => event.key === 'Enter' && this._authMode === 'forgot' && this._submitAccountForm()}
-                                    />
-                                </div>`
-                              : ''}
-                          ${this._authMode !== 'forgot'
-                              ? html`<div class="form-group">
-                                    <label class="form-label" for="cloud-account-password">${this._authMode === 'reset' ? 'New password' : 'Password'}</label>
-                                    <input
-                                        id="cloud-account-password"
-                                        type="password"
-                                        autocomplete=${this._authMode === 'signup' || this._authMode === 'reset' ? 'new-password' : 'current-password'}
-                                        placeholder=${this._authMode === 'signup' || this._authMode === 'reset' ? 'At least 8 characters' : 'Your password'}
-                                        .value=${this._authPassword}
-                                        @input=${event => (this._authPassword = event.target.value)}
-                                        @keydown=${event => event.key === 'Enter' && this._submitAccountForm()}
-                                    />
-                                </div>`
-                              : ''}
-                          <div class="account-actions">
-                              <button class="account-button primary" ?disabled=${this._authBusy} @click=${() => this._submitAccountForm()}>
-                                  ${this._authBusy ? 'Please wait…' : this._authMode === 'signup' ? 'Create account' : this._authMode === 'forgot' ? 'Send reset link' : this._authMode === 'reset' ? 'Update password' : 'Log in'}
+                ${
+                    account.authenticated && this._authMode !== 'reset'
+                        ? html`
+                              <div class="account-email">Signed in as ${account.user?.email || 'your account'}</div>
+                              ${
+                                  account.error
+                                      ? html`<div class="account-description">Account status is temporarily unavailable. Refresh and try again.</div>`
+                                      : isSubscribed
+                                        ? html`<div class="account-description">
+                                              Your subscription is active${periodEnd ? html` through ${periodEnd}` : ''}.
+                                          </div>`
+                                        : billingPending
+                                          ? html`<div class="account-description">
+                                                Confirming your subscription. This can take a moment after checkout.
+                                            </div>`
+                                          : freeTrialsRemaining > 0
+                                            ? html`<div class="account-description">
+                                                  ${freeTrialsRemaining} free five-minute Cloud AI
+                                                  ${freeTrialsRemaining === 1 ? 'session' : 'sessions'} remaining. Subscribe for longer sessions.
+                                              </div>`
+                                            : html`<div class="account-description">
+                                                  Your free trials are used. Subscribe to unlock Cloud AI. Subscription access is checked securely by
+                                                  the backend.
+                                              </div>`
+                              }
+                              <div class="account-actions">
+                                  ${
+                                      isSubscribed
+                                          ? html`<button class="account-button" ?disabled=${this._authBusy} @click=${() => this._openBillingPortal()}>
+                                                Manage subscription
+                                            </button>`
+                                          : account.error || billingPending
+                                            ? ''
+                                            : html`<button
+                                                  class="account-button primary"
+                                                  ?disabled=${this._authBusy}
+                                                  @click=${() => this._startCheckout()}
+                                              >
+                                                  Choose plan
+                                              </button>`
+                                  }
+                                  <button class="account-button" ?disabled=${this._authBusy} @click=${() => this._loadAccount()}>
+                                      Refresh status
+                                  </button>
+                                  <button class="account-button" ?disabled=${this._authBusy} @click=${() => this._signOutAccount()}>Log out</button>
+                              </div>
+                          `
+                        : html`
+                              ${
+                                  this._authMode !== 'reset'
+                                      ? html`<div class="form-group">
+                                            <label class="form-label" for="cloud-account-email">Email</label>
+                                            <input
+                                                id="cloud-account-email"
+                                                type="email"
+                                                autocomplete="email"
+                                                placeholder="you@example.com"
+                                                .value=${this._authEmail}
+                                                @input=${event => (this._authEmail = event.target.value)}
+                                                @keydown=${event => event.key === 'Enter' && this._authMode === 'forgot' && this._submitAccountForm()}
+                                            />
+                                        </div>`
+                                      : ''
+                              }
+                              ${
+                                  this._authMode !== 'forgot'
+                                      ? html`<div class="form-group">
+                                            <label class="form-label" for="cloud-account-password"
+                                                >${this._authMode === 'reset' ? 'New password' : 'Password'}</label
+                                            >
+                                            <input
+                                                id="cloud-account-password"
+                                                type="password"
+                                                autocomplete=${this._authMode === 'signup' || this._authMode === 'reset' ? 'new-password' : 'current-password'}
+                                                placeholder=${this._authMode === 'signup' || this._authMode === 'reset' ? 'At least 8 characters' : 'Your password'}
+                                                .value=${this._authPassword}
+                                                @input=${event => (this._authPassword = event.target.value)}
+                                                @keydown=${event => event.key === 'Enter' && this._submitAccountForm()}
+                                            />
+                                        </div>`
+                                      : ''
+                              }
+                              <div class="account-actions">
+                                  <button class="account-button primary" ?disabled=${this._authBusy} @click=${() => this._submitAccountForm()}>
+                                      ${this._authBusy ? 'Please wait…' : this._authMode === 'signup' ? 'Create account' : this._authMode === 'forgot' ? 'Send reset link' : this._authMode === 'reset' ? 'Update password' : 'Log in'}
+                                  </button>
+                              </div>
+                              <button
+                                  class="account-switch"
+                                  @click=${() => {
+                                      this._authMode = this._authMode === 'signup' ? 'login' : this._authMode === 'login' ? 'signup' : 'login';
+                                      this._authMessage = '';
+                                  }}
+                              >
+                                  ${this._authMode === 'signup' ? 'Already have an account? Log in' : this._authMode === 'login' ? 'New to Cloud AI? Create an account' : 'Back to log in'}
                               </button>
-                          </div>
-                          <button
-                              class="account-switch"
-                              @click=${() => {
-                                  this._authMode = this._authMode === 'signup' ? 'login' : this._authMode === 'login' ? 'signup' : 'login';
-                                  this._authMessage = '';
-                              }}
-                          >
-                              ${this._authMode === 'signup' ? 'Already have an account? Log in' : this._authMode === 'login' ? 'New to Cloud AI? Create an account' : 'Back to log in'}
-                          </button>
-                          ${this._authMode === 'login'
-                              ? html`<button class="account-switch" @click=${() => { this._authMode = 'forgot'; this._authMessage = ''; }}>Forgot your password?</button>`
-                              : ''}
-                          ${this._authMode === 'signup' ? html`<div class="account-description">After signing up, verify your email. The link will bring you back to this app.</div>` : ''}
-                      `}
-
+                              ${
+                                  this._authMode === 'login'
+                                      ? html`<button
+                                            class="account-switch"
+                                            @click=${() => {
+                                                this._authMode = 'forgot';
+                                                this._authMessage = '';
+                                            }}
+                                        >
+                                            Forgot your password?
+                                        </button>`
+                                      : ''
+                              }
+                              ${this._authMode === 'signup' ? html`<div class="account-description">After signing up, verify your email. The link will bring you back to this app.</div>` : ''}
+                          `
+                }
                 ${this._authMessage ? html`<div class="account-message ${this._authMessageType}">${this._authMessage}</div>` : ''}
             </section>
 
-            ${account.authenticated && !account.error && !isSubscribed && !billingPending && freeTrialsRemaining <= 0
-                ? html`<div class="account-description">One plan is available at launch. Usage limits can be added later.</div>`
-                : ''}
+            ${
+                account.authenticated && !account.error && !isSubscribed && !billingPending && freeTrialsRemaining <= 0
+                    ? html`<div class="account-description">One plan is available at launch. Usage limits can be added later.</div>`
+                    : ''
+            }
 
             <details class="config-section">
                 <summary class="config-summary">
@@ -1500,17 +1550,18 @@ export class MainView extends LitElement {
                 <div class="config-content">
                     <div class="form-group">
                         <label class="form-label">Backend WebSocket URL</label>
-                        <input type="url" placeholder="wss://your-service.run.app/ws" .value=${this._cloudBackendUrl} @input=${event => this._saveCloudBackendUrl(event.target.value)} />
+                        <input
+                            type="url"
+                            placeholder="wss://your-service.run.app/ws"
+                            .value=${this._cloudBackendUrl}
+                            @input=${event => this._saveCloudBackendUrl(event.target.value)}
+                        />
                         <div class="form-hint">Use ws://127.0.0.1:8787/ws for local development; deployed services must use wss://.</div>
                     </div>
                 </div>
             </details>
 
             ${this._renderStartButton()}
-            <div class="mode-links">
-                <button class="mode-link" @click=${() => this._saveMode('byok')}>Use own API keys</button>
-                <button class="mode-link" @click=${() => this._saveMode('local')}>Use local AI</button>
-            </div>
         `;
     }
 
@@ -1697,23 +1748,10 @@ export class MainView extends LitElement {
 
         return html`
             <div class="form-wrapper">
-                ${
-                    this._mode === 'local'
-                        ? html`
-                              <div class="title-row">
-                                  <div class="page-title">Cheating Daddy <span class="mode-suffix">Local AI</span></div>
-                                  <button class="help-btn" @click=${this._openLocalHelp} aria-label="Open Local AI help">${helpIcon}</button>
-                              </div>
-                          `
-                        : html` <div class="page-title">Cheating Daddy <span class="mode-suffix">${this._mode === 'cloud' ? 'Cloud AI' : 'BYOK'}</span></div> `
-                }
-                <div class="page-subtitle">
-                    ${this._mode === 'byok' ? 'Bring your own API keys' : this._mode === 'cloud' ? 'Connect through your cloud backend' : 'Run models locally on your machine'}
-                </div>
+                <div class="page-title">Cheating Daddy <span class="mode-suffix">Cloud AI</span></div>
+                <div class="page-subtitle">Connect through your cloud backend</div>
 
-                ${this._mode === 'byok' ? this._renderByokMode() : ''}
-                ${this._mode === 'cloud' ? this._renderCloudMode() : ''}
-                ${this._mode === 'local' ? this._renderLocalMode() : ''}
+                ${this._renderCloudMode()}
             </div>
             ${this._mode === 'local' && this._showLocalHelp ? this._renderLocalHelp(closeIcon) : ''}
         `;

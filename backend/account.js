@@ -90,12 +90,27 @@ function authHeaders(anonKey, accessToken) {
     };
 }
 
+const userTokenCache = new Map();
+const USER_CACHE_TTL_MS = 60 * 1000;
+
 async function getUser(accessToken) {
+    if (!accessToken) throw Object.assign(new Error('Authentication required'), { statusCode: 401 });
+    const cached = userTokenCache.get(accessToken);
+    if (cached && Date.now() < cached.expiresAt) {
+        return cached.user;
+    }
     const { url, anonKey } = getSupabaseConfig();
     if (!url || !anonKey) throw Object.assign(new Error('Supabase Auth is not configured'), { statusCode: 503 });
     const response = await fetch(`${url}/auth/v1/user`, { headers: authHeaders(anonKey, accessToken) });
     const data = await response.json();
     if (!response.ok) throw Object.assign(new Error(data.msg || data.message || 'Sign in to continue'), { statusCode: 401 });
+    userTokenCache.set(accessToken, { user: data, expiresAt: Date.now() + USER_CACHE_TTL_MS });
+    if (userTokenCache.size > 1000) {
+        const now = Date.now();
+        for (const [key, entry] of userTokenCache.entries()) {
+            if (entry.expiresAt <= now) userTokenCache.delete(key);
+        }
+    }
     return data;
 }
 
@@ -170,6 +185,220 @@ async function consumeFreeTrial(userId) {
     const rows = await response.json().catch(() => []);
     if (!rows[0]) throw Object.assign(new Error('A free trial was just started on this account. Refresh and try again.'), { statusCode: 409 });
     return { free_trials_used: usedBefore + 1, free_trials_allowed: allowed };
+}
+
+async function logAiUsage({ userId, sessionId, eventType, model, durationSeconds = 0, metadata = {} }) {
+    if (!userId) return;
+    try {
+        const { url, serviceRoleKey } = getSupabaseConfig();
+        if (!url || !serviceRoleKey) return;
+        const row = {
+            user_id: userId,
+            session_id: sessionId || null,
+            event_type: eventType,
+            model: model || null,
+            duration_seconds: Math.max(0, Math.round(durationSeconds || 0)),
+            metadata: metadata || {},
+        };
+        await fetch(`${url}/rest/v1/ai_usage`, {
+            method: 'POST',
+            headers: {
+                apikey: serviceRoleKey,
+                authorization: `Bearer ${serviceRoleKey}`,
+                'content-type': 'application/json',
+                prefer: 'return=minimal',
+            },
+            body: JSON.stringify(row),
+        }).catch(err => console.warn('[Telemetry] Error logging AI usage:', err.message));
+    } catch (err) {
+        console.warn('[Telemetry] logAiUsage exception:', err.message);
+    }
+}
+
+async function getUserPreferences(userId) {
+    const { url, serviceRoleKey } = getSupabaseConfig();
+    if (!url || !serviceRoleKey) throw Object.assign(new Error('Supabase is not configured'), { statusCode: 503 });
+    const query = new URLSearchParams({
+        select: 'custom_prompt,selected_profile,selected_language,audio_mode,selected_screenshot_interval,selected_image_quality,google_search_enabled,updated_at',
+        user_id: `eq.${userId}`,
+        limit: '1',
+    });
+    const response = await fetch(`${url}/rest/v1/user_preferences?${query}`, {
+        headers: { apikey: serviceRoleKey, authorization: `Bearer ${serviceRoleKey}`, accept: 'application/json' },
+    });
+    if (!response.ok) return null;
+    const rows = await response.json().catch(() => []);
+    if (!rows[0]) return null;
+    const r = rows[0];
+    return {
+        customPrompt: r.custom_prompt || '',
+        selectedProfile: r.selected_profile || 'interview',
+        selectedLanguage: r.selected_language || 'en-US',
+        audioMode: r.audio_mode || 'speaker_only',
+        selectedScreenshotInterval: r.selected_screenshot_interval || '5',
+        selectedImageQuality: r.selected_image_quality || 'medium',
+        googleSearchEnabled: Boolean(r.google_search_enabled),
+        updatedAt: r.updated_at,
+    };
+}
+
+async function saveUserPreferences(userId, prefs) {
+    const { url, serviceRoleKey } = getSupabaseConfig();
+    if (!url || !serviceRoleKey) throw Object.assign(new Error('Supabase is not configured'), { statusCode: 503 });
+    const row = {
+        user_id: userId,
+        custom_prompt: typeof prefs.customPrompt === 'string' ? prefs.customPrompt : '',
+        selected_profile: typeof prefs.selectedProfile === 'string' ? prefs.selectedProfile : 'interview',
+        selected_language: typeof prefs.selectedLanguage === 'string' ? prefs.selectedLanguage : 'en-US',
+        audio_mode: typeof prefs.audioMode === 'string' ? prefs.audioMode : 'speaker_only',
+        selected_screenshot_interval: String(prefs.selectedScreenshotInterval || '5'),
+        selected_image_quality: String(prefs.selectedImageQuality || 'medium'),
+        google_search_enabled: Boolean(prefs.googleSearchEnabled),
+    };
+    const response = await fetch(`${url}/rest/v1/user_preferences?on_conflict=user_id`, {
+        method: 'POST',
+        headers: {
+            apikey: serviceRoleKey,
+            authorization: `Bearer ${serviceRoleKey}`,
+            'content-type': 'application/json',
+            prefer: 'resolution=merge-duplicates,return=representation',
+        },
+        body: JSON.stringify(row),
+    });
+    if (!response.ok) {
+        const errorText = await response.text().catch(() => '');
+        throw Object.assign(new Error(`Could not save preferences (${response.status}): ${errorText}`), { statusCode: 502 });
+    }
+    const data = await response.json().catch(() => []);
+    const r = data[0] || row;
+    return {
+        customPrompt: r.custom_prompt || '',
+        selectedProfile: r.selected_profile || 'interview',
+        selectedLanguage: r.selected_language || 'en-US',
+        audioMode: r.audio_mode || 'speaker_only',
+        selectedScreenshotInterval: r.selected_screenshot_interval || '5',
+        selectedImageQuality: r.selected_image_quality || 'medium',
+        googleSearchEnabled: Boolean(r.google_search_enabled),
+        updatedAt: r.updated_at,
+    };
+}
+
+async function getUsageSummary(userId) {
+    const { url, serviceRoleKey } = getSupabaseConfig();
+    if (!url || !serviceRoleKey) return { sessionCount: 0, totalDurationSeconds: 0, screenshotsCount: 0 };
+    const query = new URLSearchParams({
+        select: 'event_type,duration_seconds',
+        user_id: `eq.${userId}`,
+        limit: '500',
+    });
+    const response = await fetch(`${url}/rest/v1/ai_usage?${query}`, {
+        headers: { apikey: serviceRoleKey, authorization: `Bearer ${serviceRoleKey}`, accept: 'application/json' },
+    });
+    if (!response.ok) return { sessionCount: 0, totalDurationSeconds: 0, screenshotsCount: 0 };
+    const rows = await response.json().catch(() => []);
+    let sessionCount = 0;
+    let totalDurationSeconds = 0;
+    let screenshotsCount = 0;
+    for (const row of rows) {
+        if (row.event_type === 'session_start') sessionCount++;
+        else if (row.event_type === 'session_end') totalDurationSeconds += row.duration_seconds || 0;
+        else if (row.event_type === 'screenshot_analysis') screenshotsCount++;
+    }
+    return { sessionCount, totalDurationSeconds, screenshotsCount };
+}
+
+async function getUserSessions(userId) {
+    const { url, serviceRoleKey } = getSupabaseConfig();
+    if (!url || !serviceRoleKey) return [];
+    const query = new URLSearchParams({
+        select: 'id,profile,custom_prompt,created_at,updated_at,conversation_history,screen_analysis_history',
+        user_id: `eq.${userId}`,
+        order: 'created_at.desc',
+        limit: '100',
+    });
+    const response = await fetch(`${url}/rest/v1/sessions?${query}`, {
+        headers: { apikey: serviceRoleKey, authorization: `Bearer ${serviceRoleKey}`, accept: 'application/json' },
+    });
+    if (!response.ok) return [];
+    const rows = await response.json().catch(() => []);
+    return rows.map(row => ({
+        sessionId: row.id,
+        createdAt: new Date(row.created_at).getTime(),
+        lastUpdated: new Date(row.updated_at).getTime(),
+        profile: row.profile || 'interview',
+        customPrompt: row.custom_prompt || '',
+        messageCount: Array.isArray(row.conversation_history) ? row.conversation_history.length : 0,
+        screenAnalysisCount: Array.isArray(row.screen_analysis_history) ? row.screen_analysis_history.length : 0,
+    }));
+}
+
+async function getUserSessionDetails(userId, sessionId) {
+    const { url, serviceRoleKey } = getSupabaseConfig();
+    if (!url || !serviceRoleKey) return null;
+    const query = new URLSearchParams({
+        select: 'id,profile,custom_prompt,created_at,updated_at,conversation_history,screen_analysis_history',
+        id: `eq.${sessionId}`,
+        user_id: `eq.${userId}`,
+        limit: '1',
+    });
+    const response = await fetch(`${url}/rest/v1/sessions?${query}`, {
+        headers: { apikey: serviceRoleKey, authorization: `Bearer ${serviceRoleKey}`, accept: 'application/json' },
+    });
+    if (!response.ok) return null;
+    const rows = await response.json().catch(() => []);
+    if (!rows[0]) return null;
+    const row = rows[0];
+    return {
+        sessionId: row.id,
+        createdAt: new Date(row.created_at).getTime(),
+        lastUpdated: new Date(row.updated_at).getTime(),
+        profile: row.profile || 'interview',
+        customPrompt: row.custom_prompt || '',
+        conversationHistory: Array.isArray(row.conversation_history) ? row.conversation_history : [],
+        screenAnalysisHistory: Array.isArray(row.screen_analysis_history) ? row.screen_analysis_history : [],
+    };
+}
+
+async function saveUserSession(userId, sessionId, sessionData) {
+    const { url, serviceRoleKey } = getSupabaseConfig();
+    if (!url || !serviceRoleKey) return false;
+    const existing = await getUserSessionDetails(userId, sessionId);
+    const row = {
+        id: sessionId,
+        user_id: userId,
+        profile: sessionData.profile || existing?.profile || 'interview',
+        custom_prompt: sessionData.customPrompt || existing?.customPrompt || '',
+        conversation_history: sessionData.conversationHistory || existing?.conversationHistory || [],
+        screen_analysis_history: sessionData.screenAnalysisHistory || existing?.screenAnalysisHistory || [],
+    };
+    const response = await fetch(`${url}/rest/v1/sessions?on_conflict=id`, {
+        method: 'POST',
+        headers: {
+            apikey: serviceRoleKey,
+            authorization: `Bearer ${serviceRoleKey}`,
+            'content-type': 'application/json',
+            prefer: 'resolution=merge-duplicates,return=minimal',
+        },
+        body: JSON.stringify(row),
+    });
+    return response.ok;
+}
+
+async function deleteUserSession(userId, sessionId) {
+    const { url, serviceRoleKey } = getSupabaseConfig();
+    if (!url || !serviceRoleKey) return false;
+    const query = new URLSearchParams({
+        id: `eq.${sessionId}`,
+        user_id: `eq.${userId}`,
+    });
+    const response = await fetch(`${url}/rest/v1/sessions?${query}`, {
+        method: 'DELETE',
+        headers: {
+            apikey: serviceRoleKey,
+            authorization: `Bearer ${serviceRoleKey}`,
+        },
+    });
+    return response.ok;
 }
 
 async function requireActiveUser(request) {
@@ -316,10 +545,58 @@ async function handleAccountRequest(request, response, requestUrl) {
             });
         }
 
+        if (request.method === 'GET' && route === '/v1/preferences') {
+            const { user } = await requireActiveUser(request);
+            const preferences = await getUserPreferences(user.id);
+            return sendJson(response, 200, { preferences });
+        }
+
+        if (request.method === 'PUT' && route === '/v1/preferences') {
+            const { user } = await requireActiveUser(request);
+            const body = await readJson(request);
+            const preferences = await saveUserPreferences(user.id, body || {});
+            return sendJson(response, 200, { success: true, preferences });
+        }
+
+        if (request.method === 'GET' && route === '/v1/usage/summary') {
+            const { user } = await requireActiveUser(request);
+            const summary = await getUsageSummary(user.id);
+            return sendJson(response, 200, summary);
+        }
+
+        if (request.method === 'GET' && route === '/v1/sessions') {
+            const { user } = await requireActiveUser(request);
+            const sessions = await getUserSessions(user.id);
+            return sendJson(response, 200, { sessions });
+        }
+
+        const sessionMatch = route.match(/^\/v1\/sessions\/([^/]+)$/);
+        if (sessionMatch) {
+            const sessionId = sessionMatch[1];
+            const { user } = await requireActiveUser(request);
+            if (request.method === 'GET') {
+                const session = await getUserSessionDetails(user.id, sessionId);
+                if (!session) return sendJson(response, 404, { error: 'Session not found' });
+                return sendJson(response, 200, { session });
+            }
+            if (request.method === 'POST') {
+                const body = await readJson(request);
+                const success = await saveUserSession(user.id, sessionId, body || {});
+                return sendJson(response, 200, { success });
+            }
+            if (request.method === 'DELETE') {
+                const success = await deleteUserSession(user.id, sessionId);
+                return sendJson(response, 200, { success });
+            }
+        }
+
         if (request.method === 'POST' && route === '/v1/billing/checkout') {
             const { user } = await requireActiveUser(request);
             const { priceId, publicBackendUrl } = getStripeConfig();
-            if (!priceId || !publicBackendUrl) return sendJson(response, 503, { error: 'Stripe price and public backend URL must be configured' });
+            if (!priceId || !publicBackendUrl)
+                return sendJson(response, 503, {
+                    error: 'Stripe billing is awaiting setup. Configure STRIPE_PRICE_ID, STRIPE_SECRET_KEY, and PUBLIC_BACKEND_URL in backend/.env to enable live checkout.',
+                });
             const current = await getSubscription(user.id);
             if (['active', 'trialing'].includes(current?.status))
                 return sendJson(response, 409, { error: 'Your account already has an active subscription' });
@@ -381,4 +658,12 @@ module.exports = {
     ensureSubscription,
     consumeFreeTrial,
     getBearerToken,
+    logAiUsage,
+    getUserPreferences,
+    saveUserPreferences,
+    getUsageSummary,
+    getUserSessions,
+    getUserSessionDetails,
+    saveUserSession,
+    deleteUserSession,
 };

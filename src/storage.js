@@ -22,7 +22,7 @@ const DEFAULT_CREDENTIALS = {
 
 const DEFAULT_PREFERENCES = {
     customPrompt: '',
-    providerMode: 'byok',
+    providerMode: 'cloud',
     cloudBackendUrl: process.env.CHEATING_DADDY_BACKEND_URL || 'ws://127.0.0.1:8787/ws',
     selectedProfile: 'interview',
     selectedLanguage: 'en-US',
@@ -222,6 +222,7 @@ function getPreferences() {
     };
 
     preferences.whisperModel = legacyWhisperModels[preferences.whisperModel] || preferences.whisperModel;
+    preferences.providerMode = 'cloud';
     return preferences;
 }
 

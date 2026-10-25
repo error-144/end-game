@@ -455,8 +455,18 @@ export class CheatingDaddyApp extends LitElement {
         try {
             const [config, prefs] = await Promise.all([cheatingDaddy.storage.getConfig(), cheatingDaddy.storage.getPreferences()]);
 
-            // Route to auth first if not yet onboarded, then to onboarding after sign-in
-            this.currentView = config.onboarded ? 'main' : 'auth';
+            // Mandatory Auth: check if user is signed in to Cloud AI
+            let isAuthenticated = false;
+            try {
+                const accountState = await cheatingDaddy.account.getState();
+                this._accountState = accountState;
+                isAuthenticated = Boolean(accountState && accountState.authenticated);
+            } catch (err) {
+                console.warn('[App] Error getting account state on startup:', err);
+            }
+
+            // Route to auth if not authenticated, otherwise onboarding (if not onboarded) or main
+            this.currentView = isAuthenticated ? (config.onboarded ? 'main' : 'onboarding') : 'auth';
             this.selectedProfile = prefs.selectedProfile || 'interview';
             this.selectedLanguage = prefs.selectedLanguage || 'en-US';
             this.selectedScreenshotInterval = prefs.selectedScreenshotInterval || '5';
@@ -499,6 +509,8 @@ export class CheatingDaddyApp extends LitElement {
                 }
                 if (state.authenticated && this.currentView === 'auth' && !this._passwordRecoveryPending) {
                     this.handleAuthComplete();
+                } else if (!state.authenticated && this.currentView !== 'auth') {
+                    this.currentView = 'auth';
                 }
                 this.requestUpdate();
             };
@@ -629,38 +641,18 @@ export class CheatingDaddyApp extends LitElement {
     // ── Session start ──
 
     async handleStart() {
-        const prefs = await cheatingDaddy.storage.getPreferences();
-        const providerMode = prefs.providerMode || 'byok';
+        if (!this._accountState?.authenticated) {
+            this.currentView = 'auth';
+            return;
+        }
 
-        if (providerMode === 'cloud') {
-            const success = await cheatingDaddy.initializeCloud(this.selectedProfile);
-            if (!success) {
-                const mainView = this.shadowRoot.querySelector('main-view');
-                if (mainView && mainView.triggerApiKeyError) {
-                    mainView.triggerApiKeyError();
-                }
-                return;
+        const success = await cheatingDaddy.initializeCloud(this.selectedProfile);
+        if (!success) {
+            const mainView = this.shadowRoot.querySelector('main-view');
+            if (mainView && mainView.triggerApiKeyError) {
+                mainView.triggerApiKeyError();
             }
-        } else if (providerMode === 'local') {
-            const success = await cheatingDaddy.initializeLocal(this.selectedProfile);
-            if (!success) {
-                const mainView = this.shadowRoot.querySelector('main-view');
-                if (mainView && mainView.triggerApiKeyError) {
-                    mainView.triggerApiKeyError();
-                }
-                return;
-            }
-        } else {
-            const apiKey = await cheatingDaddy.storage.getApiKey();
-            if (!apiKey || apiKey === '') {
-                const mainView = this.shadowRoot.querySelector('main-view');
-                if (mainView && mainView.triggerApiKeyError) {
-                    mainView.triggerApiKeyError();
-                }
-                return;
-            }
-
-            await cheatingDaddy.initializeGemini(this.selectedProfile, this.selectedLanguage);
+            return;
         }
 
         cheatingDaddy.startCapture(this.selectedScreenshotInterval, this.selectedImageQuality);
@@ -748,7 +740,8 @@ export class CheatingDaddyApp extends LitElement {
     handleAuthComplete() {
         this._passwordRecoveryPending = false;
         // After successful sign-in/sign-up, go to onboarding (first time) or main
-        cheatingDaddy.storage.getConfig()
+        cheatingDaddy.storage
+            .getConfig()
             .then(config => {
                 this.currentView = config.onboarded ? 'main' : 'onboarding';
             })
@@ -758,14 +751,7 @@ export class CheatingDaddyApp extends LitElement {
     }
 
     handleAuthSkip() {
-        // Allow bypassing auth entirely — go straight to onboarding/main
-        cheatingDaddy.storage.getConfig()
-            .then(config => {
-                this.currentView = config.onboarded ? 'main' : 'onboarding';
-            })
-            .catch(() => {
-                this.currentView = 'onboarding';
-            });
+        this.currentView = 'auth';
     }
 
     async handleCloudTrialExpired() {
@@ -804,7 +790,6 @@ export class CheatingDaddyApp extends LitElement {
                     <auth-view
                         .initialMode=${this._passwordRecoveryPending ? 'update-password' : 'signin'}
                         .onAuthenticated=${() => this.handleAuthComplete()}
-                        .onSkip=${() => this.handleAuthSkip()}
                     ></auth-view>
                 `;
 

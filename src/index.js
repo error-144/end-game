@@ -191,6 +191,7 @@ function setupStorageIpcHandlers() {
     ipcMain.handle('storage:set-preferences', async (event, preferences) => {
         try {
             storage.setPreferences(preferences);
+            account.pushPreferencesToCloud(storage.getPreferences()).catch(() => {});
             return { success: true };
         } catch (error) {
             console.error('Error setting preferences:', error);
@@ -201,6 +202,7 @@ function setupStorageIpcHandlers() {
     ipcMain.handle('storage:update-preference', async (event, key, value) => {
         try {
             storage.updatePreference(key, value);
+            account.pushPreferencesToCloud(storage.getPreferences()).catch(() => {});
             return { success: true };
         } catch (error) {
             console.error('Error updating preference:', error);

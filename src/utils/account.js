@@ -126,7 +126,8 @@ async function getSafeAccountState() {
     const { data, error } = await client.auth.getSession();
     if (error) throw error;
     const session = data.session;
-    if (!session) return { authenticated: false, user: null, subscription: null, billingPending: false, backendAvailable: true, passwordRecoveryPending };
+    if (!session)
+        return { authenticated: false, user: null, subscription: null, billingPending: false, backendAvailable: true, passwordRecoveryPending };
 
     try {
         const response = await fetch(`${backendBaseUrl}/v1/account`, {
@@ -180,6 +181,63 @@ function broadcastAccountState() {
         .catch(error => console.warn('[Account] Could not refresh account state:', error.message));
 }
 
+async function syncCloudPreferences() {
+    try {
+        const client = await getClient().catch(() => null);
+        if (!client) return;
+        const { data, error } = await client.auth.getSession();
+        if (error || !data?.session) return;
+        const token = data.session.access_token;
+        const backendUrl = backendBaseUrl || getBackendBaseUrl();
+        const response = await fetch(`${backendUrl}/v1/preferences`, {
+            headers: { authorization: `Bearer ${token}` },
+        });
+        if (!response.ok) return;
+        const result = await response.json().catch(() => null);
+        const cloudPrefs = result?.preferences;
+        const storage = require('../storage');
+        const localPrefs = storage.getPreferences();
+        if (cloudPrefs && (cloudPrefs.customPrompt || cloudPrefs.selectedProfile || cloudPrefs.selectedLanguage)) {
+            storage.setPreferences({
+                ...localPrefs,
+                customPrompt: cloudPrefs.customPrompt ?? localPrefs.customPrompt,
+                selectedProfile: cloudPrefs.selectedProfile ?? localPrefs.selectedProfile,
+                selectedLanguage: cloudPrefs.selectedLanguage ?? localPrefs.selectedLanguage,
+                audioMode: cloudPrefs.audioMode ?? localPrefs.audioMode,
+                selectedScreenshotInterval: cloudPrefs.selectedScreenshotInterval ?? localPrefs.selectedScreenshotInterval,
+                selectedImageQuality: cloudPrefs.selectedImageQuality ?? localPrefs.selectedImageQuality,
+                googleSearchEnabled: Boolean(cloudPrefs.googleSearchEnabled),
+            });
+            console.log('[Account] Preferences successfully synced from cloud');
+        } else {
+            await pushPreferencesToCloud(localPrefs);
+        }
+    } catch (err) {
+        console.warn('[Account] Could not sync cloud preferences:', err.message);
+    }
+}
+
+async function pushPreferencesToCloud(prefs) {
+    try {
+        const client = await getClient().catch(() => null);
+        if (!client) return;
+        const { data, error } = await client.auth.getSession();
+        if (error || !data?.session) return;
+        const token = data.session.access_token;
+        const backendUrl = backendBaseUrl || getBackendBaseUrl();
+        await fetch(`${backendUrl}/v1/preferences`, {
+            method: 'PUT',
+            headers: {
+                authorization: `Bearer ${token}`,
+                'content-type': 'application/json',
+            },
+            body: JSON.stringify(prefs || {}),
+        });
+    } catch (err) {
+        console.warn('[Account] Could not push preferences to cloud:', err.message);
+    }
+}
+
 function initializeAccount() {
     getClient()
         .then(client => {
@@ -191,10 +249,14 @@ function initializeAccount() {
                         window.webContents.send('account:password-recovery');
                     }
                 }
+                if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
+                    syncCloudPreferences();
+                }
                 setTimeout(broadcastAccountState, 0);
             });
             authListener = data.subscription;
             broadcastAccountState();
+            syncCloudPreferences();
         })
         .catch(error => console.info('[Account] Sign-in is not configured:', error.message));
 }
@@ -255,6 +317,7 @@ function setupAccountIpcHandlers() {
         const { data, error } = await client.auth.signInWithPassword({ email, password });
         if (error) throw error;
         broadcastAccountState();
+        syncCloudPreferences();
         return { authenticated: Boolean(data.session) };
     });
     ipcMain.handle('account:request-password-reset', async (_event, email) => {
@@ -314,6 +377,10 @@ function setupAccountIpcHandlers() {
         registerAuthDeepLink(url);
         return { success: true };
     });
+    ipcMain.handle('account:sync-preferences', async () => {
+        await syncCloudPreferences();
+        return { success: true };
+    });
 }
 
 async function openBillingSession(pathname) {
@@ -343,4 +410,12 @@ async function getAccessToken() {
     return data.session?.access_token || '';
 }
 
-module.exports = { APP_PROTOCOL, getAccessToken, initializeAccount, registerAuthDeepLink, setupAccountIpcHandlers };
+module.exports = {
+    APP_PROTOCOL,
+    getAccessToken,
+    initializeAccount,
+    registerAuthDeepLink,
+    setupAccountIpcHandlers,
+    syncCloudPreferences,
+    pushPreferencesToCloud,
+};

@@ -1073,7 +1073,7 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
             return true;
         } catch (err) {
             console.error('[Cloud] Init error:', err);
-            currentProviderMode = 'byok';
+            currentProviderMode = 'cloud';
             sendToRenderer('session-initializing', false);
             return false;
         }

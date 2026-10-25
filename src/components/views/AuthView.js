@@ -680,9 +680,6 @@ export class AuthView extends LitElement {
             <div class="footer-links">
                 <span>No account?</span>
                 <button id="auth-goto-signup" @click=${() => this._switchMode('signup')}>Create one</button>
-            </div>
-            <div class="footer-links">
-                <button class="btn-ghost" @click=${() => this.onSkip()}>Continue without account</button>
             </div>`;
     }
 
@@ -752,9 +749,6 @@ export class AuthView extends LitElement {
             <div class="footer-links">
                 <span>Already have one?</span>
                 <button id="auth-goto-signin" @click=${() => this._switchMode('signin')}>Sign in</button>
-            </div>
-            <div class="footer-links">
-                <button class="btn-ghost" @click=${() => this.onSkip()}>Continue without account</button>
             </div>`;
     }
 

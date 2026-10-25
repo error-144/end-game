@@ -38,7 +38,7 @@ const http = require('node:http');
 const { GoogleGenAI, Modality } = require('@google/genai');
 const { WebSocketServer, WebSocket } = require('ws');
 const { getSystemPrompt } = require('./prompts');
-const { handleAccountRequest, getUser, getSubscription, ensureSubscription, consumeFreeTrial } = require('./account');
+const { handleAccountRequest, getUser, getSubscription, ensureSubscription, consumeFreeTrial, logAiUsage } = require('./account');
 
 const PORT = Number(process.env.PORT || 8787);
 const MAX_PAYLOAD_BYTES = 12 * 1024 * 1024;
@@ -166,6 +166,12 @@ const httpServer = http.createServer(async (request, response) => {
             });
             sessionContext.screenshotQueue = operation.catch(() => {});
             const summary = await operation;
+            logAiUsage({
+                userId: user.id,
+                sessionId: screenshotMatch[1],
+                eventType: 'screenshot_analysis',
+                model: VISION_MODEL,
+            });
             sendHttpJson(response, 200, { ok: true, summary });
         } catch (error) {
             if (!response.headersSent) {
@@ -249,6 +255,16 @@ wss.on('connection', socket => {
             if (sessionContext.trialTimers) {
                 for (const timer of sessionContext.trialTimers) clearTimeout(timer);
                 sessionContext.trialTimers = [];
+            }
+            if (sessionId && sessionContext.userId && sessionContext.startTime) {
+                const durationSeconds = Math.round((Date.now() - sessionContext.startTime) / 1000);
+                logAiUsage({
+                    userId: sessionContext.userId,
+                    sessionId,
+                    eventType: 'session_end',
+                    model: MODEL,
+                    durationSeconds,
+                });
             }
         }
         if (sessionId) activeSessions.delete(sessionId);
@@ -393,6 +409,7 @@ wss.on('connection', socket => {
             ai,
             isClosing: false,
             isTrialSession,
+            startTime: Date.now(),
             screenshotQueue: Promise.resolve(),
             get responseSource() {
                 return responseSource;
@@ -408,6 +425,13 @@ wss.on('connection', socket => {
             },
         };
         activeSessions.set(sessionId, sessionContext);
+        logAiUsage({
+            userId: accountUser?.id,
+            sessionId,
+            eventType: 'session_start',
+            model: MODEL,
+            metadata: { profile, language, googleSearchEnabled },
+        });
         sendJson(socket, { type: 'session_ready', sessionId, model: MODEL });
 
         if (isTrialSession) {
