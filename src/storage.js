@@ -161,6 +161,14 @@ function initializeStorage() {
             fs.mkdirSync(historyDir, { recursive: true });
         }
     }
+    // Clean up legacy plaintext credentials file
+    try {
+        const credPath = getCredentialsPath();
+        if (fs.existsSync(credPath)) {
+            fs.unlinkSync(credPath);
+            console.log('[Storage] Plaintext credentials file removed for security');
+        }
+    } catch (e) {}
 }
 
 // ============ CONFIG ============
@@ -182,32 +190,30 @@ function updateConfig(key, value) {
     return writeJsonFile(getConfigPath(), config);
 }
 
-// ============ CREDENTIALS ============
+// ============ CREDENTIALS (Cloud-Only / No Client Storage) ============
 
 function getCredentials() {
-    return readJsonFile(getCredentialsPath(), DEFAULT_CREDENTIALS);
+    return DEFAULT_CREDENTIALS;
 }
 
-function setCredentials(credentials) {
-    const current = getCredentials();
-    const updated = { ...current, ...credentials };
-    return writeJsonFile(getCredentialsPath(), updated);
+function setCredentials() {
+    return true;
 }
 
 function getApiKey() {
-    return getCredentials().apiKey || '';
+    return '';
 }
 
-function setApiKey(apiKey) {
-    return setCredentials({ apiKey });
+function setApiKey() {
+    return true;
 }
 
 function getGroqApiKey() {
-    return getCredentials().groqApiKey || '';
+    return '';
 }
 
-function setGroqApiKey(groqApiKey) {
-    return setCredentials({ groqApiKey });
+function setGroqApiKey() {
+    return true;
 }
 
 // ============ PREFERENCES ============

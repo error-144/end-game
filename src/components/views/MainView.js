@@ -854,19 +854,10 @@ export class MainView extends LitElement {
 
     async _loadFromStorage() {
         try {
-            const [config, prefs, creds] = await Promise.all([
-                cheatingDaddy.storage.getConfig(),
-                cheatingDaddy.storage.getPreferences(),
-                cheatingDaddy.storage.getCredentials().catch(() => ({})),
-            ]);
+            const [config, prefs] = await Promise.all([cheatingDaddy.storage.getConfig(), cheatingDaddy.storage.getPreferences()]);
 
             this._mode = 'cloud';
             this._cloudBackendUrl = prefs.cloudBackendUrl || this._cloudBackendUrl;
-
-            // Load keys
-            this._geminiKey = (await cheatingDaddy.storage.getApiKey().catch(() => '')) || '';
-            this._groqKey = (await cheatingDaddy.storage.getGroqApiKey().catch(() => '')) || '';
-            this._openaiKey = creds.openaiKey || '';
             this._geminiLiveModel = config.geminiLiveModel || 'gemini-3.1-flash-live-preview';
             this._groqModel = config.groqModel || 'qwen/qwen3.6-27b';
             this._groqImageModel = config.groqImageModel || 'qwen/qwen3.6-27b';
@@ -1157,12 +1148,10 @@ export class MainView extends LitElement {
         }
     }
 
-    // ── Persistence ──
-
-    async _saveMode(mode) {
-        this._mode = mode;
+    async _saveMode() {
+        this._mode = 'cloud';
         this._keyError = false;
-        await cheatingDaddy.storage.updatePreference('providerMode', mode);
+        await cheatingDaddy.storage.updatePreference('providerMode', 'cloud');
         this.requestUpdate();
     }
 
@@ -1572,164 +1561,6 @@ export class MainView extends LitElement {
             <svg class="config-chevron" viewBox="0 0 20 20" fill="none" aria-hidden="true">
                 <path d="m5 7.5 5 5 5-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
-        `;
-    }
-
-    _renderByokMode() {
-        return html`
-            <details class="config-section">
-                <summary class="config-summary">
-                    <span class="config-summary-text">
-                        <span class="config-summary-title">Transcription</span>
-                        <span class="config-summary-description">Gemini Live connection</span>
-                    </span>
-                    ${this._renderConfigChevron()}
-                </summary>
-                <div class="config-content">
-                    <div class="form-group">
-                        <label class="form-label">Gemini API Key</label>
-                        <input
-                            type="password"
-                            placeholder="Required"
-                            .value=${this._geminiKey}
-                            @input=${e => this._saveGeminiKey(e.target.value)}
-                            class=${this._keyError ? 'error' : ''}
-                        />
-                        <div class="form-hint">
-                            <span class="link" @click=${() => this.onExternalLink('https://aistudio.google.com/apikey')}>Get Gemini key</span>
-                        </div>
-                    </div>
-
-                    <div class="form-group">
-                        <label class="form-label">Gemini Live Model</label>
-                        <input type="text" .value=${this._geminiLiveModel} @input=${e => this._saveGeminiLiveModel(e.target.value)} />
-                    </div>
-                </div>
-            </details>
-
-            <details class="config-section">
-                <summary class="config-summary">
-                    <span class="config-summary-text">
-                        <span class="config-summary-title">AI responses</span>
-                        <span class="config-summary-description">Groq key and response model</span>
-                    </span>
-                    ${this._renderConfigChevron()}
-                </summary>
-                <div class="config-content">
-                    <div class="form-group">
-                        <label class="form-label">Groq API Key</label>
-                        <input type="password" placeholder="Optional" .value=${this._groqKey} @input=${e => this._saveGroqKey(e.target.value)} />
-                        <div class="form-hint">
-                            <span class="link" @click=${() => this.onExternalLink('https://console.groq.com/keys')}>Get Groq key</span>
-                        </div>
-                    </div>
-
-                    <div class="form-group">
-                        <label class="form-label">Groq Model</label>
-                        <input type="text" .value=${this._groqModel} @input=${e => this._saveGroqModel(e.target.value)} />
-                    </div>
-
-                    <div class="form-group">
-                        <label class="form-label">Groq Image Model</label>
-                        <input type="text" .value=${this._groqImageModel} @input=${e => this._saveGroqImageModel(e.target.value)} />
-                    </div>
-
-                    <label class="config-checkbox">
-                        <input
-                            type="checkbox"
-                            .checked=${this._disableGroqThinking}
-                            @change=${e => this._saveDisableGroqThinking(e.target.checked)}
-                        />
-                        <span class="config-checkbox-text">
-                            <span class="config-summary-title">Disable thinking</span>
-                            <span class="config-summary-description">Faster responses with less internal reasoning</span>
-                        </span>
-                    </label>
-
-                    <div class="config-note">
-                        If the Groq API key is empty, Gemini Live is used for answers instead. Its answer quality may be lower.
-                    </div>
-                </div>
-            </details>
-
-            ${this._renderStartButton()} ${this._renderDivider()}
-
-            <div class="mode-links">
-                <button class="mode-link" @click=${() => this._saveMode('cloud')}>Use Cloud AI</button>
-                <button class="mode-link" @click=${() => this._saveMode('local')}>Use local AI</button>
-            </div>
-        `;
-    }
-
-    // ── Local AI mode ──
-
-    _renderLocalMode() {
-        return html`
-            <details class="config-section">
-                <summary class="config-summary">
-                    <span class="config-summary-text">
-                        <span class="config-summary-title">Language model</span>
-                        <span class="config-summary-description">Local GGUF model</span>
-                    </span>
-                    ${this._renderConfigChevron()}
-                </summary>
-                <div class="config-content">
-                    <div class="form-group">
-                        <label class="form-label">Model</label>
-                        <select
-                            .value=${this._useCustomLocalLlmModel ? 'custom' : this._localLlmModel}
-                            @change=${event => this._selectLocalLlmModel(event.target.value)}
-                        >
-                            ${LOCAL_LLM_PRESETS.map(preset => html`<option value=${preset.value}>${preset.label}</option>`)}
-                            <option value="custom">Custom Hugging Face model or local GGUF…</option>
-                        </select>
-                        ${
-                            this._useCustomLocalLlmModel
-                                ? html`
-                                      <input
-                                          type="text"
-                                          placeholder="owner/repository:quant or /absolute/model.gguf"
-                                          .value=${this._localLlmModel}
-                                          @input=${event => this._saveLocalLlmModel(event.target.value)}
-                                      />
-                                  `
-                                : ''
-                        }
-                        <div class="form-hint">Sizes include the vision model. Q4 uses less memory; Q8 preserves more quality.</div>
-                    </div>
-                </div>
-            </details>
-
-            <details class="config-section">
-                <summary class="config-summary">
-                    <span class="config-summary-text">
-                        <span class="config-summary-title">Transcription</span>
-                        <span class="config-summary-description">Whisper speech-to-text model</span>
-                    </span>
-                    ${this._renderConfigChevron()}
-                </summary>
-                <div class="config-content">
-                    <div class="form-group">
-                        <div class="whisper-label-row">
-                            <label class="form-label">Whisper Model</label>
-                            ${this.whisperDownloading ? html`<div class="whisper-spinner"></div>` : ''}
-                        </div>
-                        <select .value=${this._whisperModel} @change=${e => this._saveWhisperModel(e.target.value)}>
-                            <option value="tiny.en" ?selected=${this._whisperModel === 'tiny.en'}>Tiny English (75 MB, fastest)</option>
-                            <option value="base.en" ?selected=${this._whisperModel === 'base.en'}>Base English (142 MB)</option>
-                            <option value="small.en" ?selected=${this._whisperModel === 'small.en'}>Small English (466 MB, most accurate)</option>
-                        </select>
-                        <div class="form-hint">${this.whisperDownloading ? 'Downloading model...' : 'Downloaded automatically on first use'}</div>
-                    </div>
-                </div>
-            </details>
-
-            ${this._renderStartButton()} ${this._renderDivider()}
-
-            <div class="mode-links">
-                <button class="mode-link" @click=${() => this._saveMode('cloud')}>Use Cloud AI</button>
-                <button class="mode-link" @click=${() => this._saveMode('byok')}>Use own API keys</button>
-            </div>
         `;
     }
 

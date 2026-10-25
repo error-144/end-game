@@ -5,6 +5,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { app, ipcMain, safeStorage, shell } = require('electron');
 const { createClient } = require('@supabase/supabase-js');
+const WebSocket = require('ws');
+
+if (!globalThis.WebSocket) {
+    globalThis.WebSocket = WebSocket;
+}
 
 const APP_PROTOCOL = 'cheating-daddy';
 let supabaseClient = null;
@@ -106,6 +111,9 @@ async function getClient() {
                 detectSessionInUrl: false,
                 flowType: 'pkce',
             },
+            realtime: {
+                transport: WebSocket,
+            },
         });
         return supabaseClient;
     })();
@@ -116,7 +124,13 @@ async function getClient() {
     }
 }
 
-async function getSafeAccountState() {
+let cachedAccountState = null;
+let cachedAccountStateExpiresAt = 0;
+
+async function getSafeAccountState(forceFresh = false) {
+    if (!forceFresh && cachedAccountState && Date.now() < cachedAccountStateExpiresAt) {
+        return cachedAccountState;
+    }
     let client;
     try {
         client = await getClient();
@@ -126,8 +140,11 @@ async function getSafeAccountState() {
     const { data, error } = await client.auth.getSession();
     if (error) throw error;
     const session = data.session;
-    if (!session)
+    if (!session) {
+        cachedAccountState = null;
+        cachedAccountStateExpiresAt = 0;
         return { authenticated: false, user: null, subscription: null, billingPending: false, backendAvailable: true, passwordRecoveryPending };
+    }
 
     try {
         const response = await fetch(`${backendBaseUrl}/v1/account`, {
@@ -136,10 +153,12 @@ async function getSafeAccountState() {
         const account = await response.json();
         if (response.status === 401) {
             await client.auth.signOut();
+            cachedAccountState = null;
+            cachedAccountStateExpiresAt = 0;
             return { authenticated: false, user: null, subscription: null, billingPending: false, backendAvailable: true };
         }
         if (!response.ok) {
-            return {
+            const fallbackState = {
                 authenticated: true,
                 user: { id: session.user.id, email: session.user.email },
                 subscription: null,
@@ -148,9 +167,12 @@ async function getSafeAccountState() {
                 passwordRecoveryPending,
                 error: account.error || 'Could not load account status',
             };
+            cachedAccountState = fallbackState;
+            cachedAccountStateExpiresAt = Date.now() + 15000;
+            return fallbackState;
         }
         if (account.subscription?.active) billingPendingUntil = 0;
-        return {
+        const state = {
             authenticated: true,
             user: { id: account.user.id, email: account.user.email },
             subscription: account.subscription,
@@ -158,8 +180,11 @@ async function getSafeAccountState() {
             backendAvailable: true,
             passwordRecoveryPending,
         };
+        cachedAccountState = state;
+        cachedAccountStateExpiresAt = Date.now() + 15000;
+        return state;
     } catch {
-        return {
+        const offlineState = {
             authenticated: true,
             user: { id: session.user.id, email: session.user.email },
             subscription: null,
@@ -168,15 +193,27 @@ async function getSafeAccountState() {
             passwordRecoveryPending,
             error: 'Backend is temporarily unavailable',
         };
+        cachedAccountState = offlineState;
+        cachedAccountStateExpiresAt = Date.now() + 5000;
+        return offlineState;
     }
 }
 
-function broadcastAccountState() {
-    getSafeAccountState()
+function broadcastAccountState(knownState = null) {
+    if (knownState) {
+        cachedAccountState = knownState;
+        cachedAccountStateExpiresAt = Date.now() + 15000;
+        for (const window of require('electron').BrowserWindow.getAllWindows()) {
+            window.webContents.send('account:state-changed', knownState);
+        }
+        return Promise.resolve(knownState);
+    }
+    return getSafeAccountState(true)
         .then(state => {
             for (const window of require('electron').BrowserWindow.getAllWindows()) {
                 window.webContents.send('account:state-changed', state);
             }
+            return state;
         })
         .catch(error => console.warn('[Account] Could not refresh account state:', error.message));
 }
@@ -280,9 +317,25 @@ function registerAuthDeepLink(urlString) {
                     );
                 }
                 const client = await getClient();
-                const { error } = await client.auth.exchangeCodeForSession(code);
+                const { data, error } = await client.auth.exchangeCodeForSession(code);
                 if (error) throw error;
-                broadcastAccountState();
+                if (data?.session) {
+                    const fastState = {
+                        authenticated: true,
+                        user: { id: data.user.id, email: data.user.email },
+                        subscription: null,
+                        billingPending: false,
+                        backendAvailable: true,
+                        passwordRecoveryPending: false,
+                    };
+                    broadcastAccountState(fastState);
+                    getSafeAccountState(true)
+                        .then(full => broadcastAccountState(full))
+                        .catch(() => {});
+                    syncCloudPreferences().catch(() => {});
+                } else {
+                    broadcastAccountState();
+                }
             } else if (url.hostname === 'billing' && url.pathname === '/return') {
                 broadcastAccountState();
             }
@@ -308,17 +361,43 @@ function setupAccountIpcHandlers() {
             getSecureStorage().removeItem('account.auth.state');
             throw error;
         }
-        if (data.session) broadcastAccountState();
-        return { confirmationRequired: !data.session, email: data.user?.email || email };
+        if (data.session) {
+            const fastState = {
+                authenticated: true,
+                user: { id: data.user.id, email: data.user.email },
+                subscription: null,
+                billingPending: false,
+                backendAvailable: true,
+                passwordRecoveryPending: false,
+            };
+            broadcastAccountState(fastState);
+            getSafeAccountState(true)
+                .then(full => broadcastAccountState(full))
+                .catch(() => {});
+            syncCloudPreferences().catch(() => {});
+            return { confirmationRequired: false, email: data.user?.email || email, state: fastState };
+        }
+        return { confirmationRequired: true, email: data.user?.email || email };
     });
     ipcMain.handle('account:sign-in', async (_event, email, password) => {
         validateCredentials(email, password, false);
         const client = await getClient();
         const { data, error } = await client.auth.signInWithPassword({ email, password });
         if (error) throw error;
-        broadcastAccountState();
-        syncCloudPreferences();
-        return { authenticated: Boolean(data.session) };
+        const fastState = {
+            authenticated: Boolean(data.session),
+            user: data.user ? { id: data.user.id, email: data.user.email } : null,
+            subscription: null,
+            billingPending: false,
+            backendAvailable: true,
+            passwordRecoveryPending: false,
+        };
+        broadcastAccountState(fastState);
+        getSafeAccountState(true)
+            .then(full => broadcastAccountState(full))
+            .catch(() => {});
+        syncCloudPreferences().catch(() => {});
+        return { authenticated: Boolean(data.session), state: fastState };
     });
     ipcMain.handle('account:request-password-reset', async (_event, email) => {
         if (typeof email !== 'string' || email.trim().length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
@@ -345,6 +424,8 @@ function setupAccountIpcHandlers() {
         return { updated: Boolean(data.user) };
     });
     ipcMain.handle('account:sign-out', async () => {
+        cachedAccountState = null;
+        cachedAccountStateExpiresAt = 0;
         const client = await getClient();
         const { error } = await client.auth.signOut();
         if (error) throw error;
@@ -410,6 +491,88 @@ async function getAccessToken() {
     return data.session?.access_token || '';
 }
 
+async function pushSessionToCloud(sessionId, sessionData) {
+    try {
+        const client = await getClient().catch(() => null);
+        if (!client) return false;
+        const { data, error } = await client.auth.getSession();
+        if (error || !data?.session) return false;
+        const token = data.session.access_token;
+        const backendUrl = backendBaseUrl || getBackendBaseUrl();
+        const response = await fetch(`${backendUrl}/v1/sessions/${sessionId}`, {
+            method: 'POST',
+            headers: {
+                authorization: `Bearer ${token}`,
+                'content-type': 'application/json',
+            },
+            body: JSON.stringify(sessionData || {}),
+        });
+        return response.ok;
+    } catch (err) {
+        console.warn('[Account] Could not push session to cloud:', err.message);
+        return false;
+    }
+}
+
+async function fetchCloudSessions() {
+    try {
+        const client = await getClient().catch(() => null);
+        if (!client) return [];
+        const { data, error } = await client.auth.getSession();
+        if (error || !data?.session) return [];
+        const token = data.session.access_token;
+        const backendUrl = backendBaseUrl || getBackendBaseUrl();
+        const response = await fetch(`${backendUrl}/v1/sessions`, {
+            headers: { authorization: `Bearer ${token}` },
+        });
+        if (!response.ok) return [];
+        const result = await response.json().catch(() => ({}));
+        return result.sessions || [];
+    } catch (err) {
+        console.warn('[Account] Could not fetch cloud sessions:', err.message);
+        return [];
+    }
+}
+
+async function fetchCloudSessionDetails(sessionId) {
+    try {
+        const client = await getClient().catch(() => null);
+        if (!client) return null;
+        const { data, error } = await client.auth.getSession();
+        if (error || !data?.session) return null;
+        const token = data.session.access_token;
+        const backendUrl = backendBaseUrl || getBackendBaseUrl();
+        const response = await fetch(`${backendUrl}/v1/sessions/${sessionId}`, {
+            headers: { authorization: `Bearer ${token}` },
+        });
+        if (!response.ok) return null;
+        const result = await response.json().catch(() => ({}));
+        return result.session || null;
+    } catch (err) {
+        console.warn('[Account] Could not fetch cloud session details:', err.message);
+        return null;
+    }
+}
+
+async function deleteCloudSession(sessionId) {
+    try {
+        const client = await getClient().catch(() => null);
+        if (!client) return false;
+        const { data, error } = await client.auth.getSession();
+        if (error || !data?.session) return false;
+        const token = data.session.access_token;
+        const backendUrl = backendBaseUrl || getBackendBaseUrl();
+        const response = await fetch(`${backendUrl}/v1/sessions/${sessionId}`, {
+            method: 'DELETE',
+            headers: { authorization: `Bearer ${token}` },
+        });
+        return response.ok;
+    } catch (err) {
+        console.warn('[Account] Could not delete cloud session:', err.message);
+        return false;
+    }
+}
+
 module.exports = {
     APP_PROTOCOL,
     getAccessToken,
@@ -418,4 +581,8 @@ module.exports = {
     setupAccountIpcHandlers,
     syncCloudPreferences,
     pushPreferencesToCloud,
+    pushSessionToCloud,
+    fetchCloudSessions,
+    fetchCloudSessionDetails,
+    deleteCloudSession,
 };

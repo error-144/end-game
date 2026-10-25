@@ -381,7 +381,7 @@ export class AuthView extends LitElement {
             this.loading = false;
         };
         this._accountStateListener = (_event, state) => {
-            if (state.authenticated && !state.passwordRecoveryPending && this.mode !== 'update-password') this.onAuthenticated();
+            if (state.authenticated && !state.passwordRecoveryPending && this.mode !== 'update-password') this.onAuthenticated(state);
         };
         ipcRenderer.on('account:password-recovery', this._passwordRecoveryListener);
         ipcRenderer.on('account:callback-error', this._callbackErrorListener);
@@ -392,7 +392,7 @@ export class AuthView extends LitElement {
         } else {
             this._ipc('account:get-state')
                 .then(state => {
-                    if (state.authenticated && !state.passwordRecoveryPending && this.mode !== 'update-password') this.onAuthenticated();
+                    if (state.authenticated && !state.passwordRecoveryPending && this.mode !== 'update-password') this.onAuthenticated(state);
                 })
                 .catch(() => {});
         }
@@ -532,8 +532,8 @@ export class AuthView extends LitElement {
         }
         this.loading = true;
         try {
-            await this._ipc('account:sign-in', email, this.password);
-            this.onAuthenticated();
+            const result = await this._ipc('account:sign-in', email, this.password);
+            this.onAuthenticated(result?.state);
         } catch (err) {
             this.errorMsg = err.message || 'Sign-in failed. Check your credentials.';
         } finally {
@@ -564,7 +564,7 @@ export class AuthView extends LitElement {
                 this.confirmEmail = result.email || email;
                 this.mode = 'confirm';
             } else {
-                this.onAuthenticated();
+                this.onAuthenticated(result?.state);
             }
         } catch (err) {
             this.errorMsg = err.message || 'Sign-up failed. Try again.';

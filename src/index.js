@@ -230,10 +230,20 @@ function setupStorageIpcHandlers() {
         }
     });
 
-    // ============ HISTORY ============
+    // ============ HISTORY (Local Cache + Cloud Sync) ============
     ipcMain.handle('storage:get-all-sessions', async () => {
         try {
-            return { success: true, data: storage.getAllSessions() };
+            const localSessions = storage.getAllSessions() || [];
+            const cloudSessions = await account.fetchCloudSessions().catch(() => []);
+            const sessionMap = new Map();
+            for (const s of localSessions) sessionMap.set(s.sessionId, s);
+            for (const s of cloudSessions) {
+                if (!sessionMap.has(s.sessionId) || (s.lastUpdated && s.lastUpdated > (sessionMap.get(s.sessionId).lastUpdated || 0))) {
+                    sessionMap.set(s.sessionId, s);
+                }
+            }
+            const merged = Array.from(sessionMap.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+            return { success: true, data: merged };
         } catch (error) {
             console.error('Error getting sessions:', error);
             return { success: false, error: error.message };
@@ -242,7 +252,14 @@ function setupStorageIpcHandlers() {
 
     ipcMain.handle('storage:get-session', async (event, sessionId) => {
         try {
-            return { success: true, data: storage.getSession(sessionId) };
+            let session = storage.getSession(sessionId);
+            if (!session) {
+                session = await account.fetchCloudSessionDetails(sessionId);
+                if (session) {
+                    storage.saveSession(sessionId, session);
+                }
+            }
+            return { success: true, data: session };
         } catch (error) {
             console.error('Error getting session:', error);
             return { success: false, error: error.message };
@@ -252,6 +269,8 @@ function setupStorageIpcHandlers() {
     ipcMain.handle('storage:save-session', async (event, sessionId, data) => {
         try {
             storage.saveSession(sessionId, data);
+            const fullSession = storage.getSession(sessionId);
+            account.pushSessionToCloud(sessionId, fullSession || data).catch(() => {});
             return { success: true };
         } catch (error) {
             console.error('Error saving session:', error);
@@ -262,6 +281,7 @@ function setupStorageIpcHandlers() {
     ipcMain.handle('storage:delete-session', async (event, sessionId) => {
         try {
             storage.deleteSession(sessionId);
+            account.deleteCloudSession(sessionId).catch(() => {});
             return { success: true };
         } catch (error) {
             console.error('Error deleting session:', error);
@@ -271,7 +291,11 @@ function setupStorageIpcHandlers() {
 
     ipcMain.handle('storage:delete-all-sessions', async () => {
         try {
+            const all = storage.getAllSessions() || [];
             storage.deleteAllSessions();
+            for (const s of all) {
+                account.deleteCloudSession(s.sessionId).catch(() => {});
+            }
             return { success: true };
         } catch (error) {
             console.error('Error deleting all sessions:', error);

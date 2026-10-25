@@ -508,7 +508,7 @@ export class CheatingDaddyApp extends LitElement {
                     this.currentView = 'auth';
                 }
                 if (state.authenticated && this.currentView === 'auth' && !this._passwordRecoveryPending) {
-                    this.handleAuthComplete();
+                    this.handleAuthComplete(state);
                 } else if (!state.authenticated && this.currentView !== 'auth') {
                     this.currentView = 'auth';
                 }
@@ -602,6 +602,11 @@ export class CheatingDaddyApp extends LitElement {
     // ── Navigation ──
 
     navigate(view) {
+        if (!this._accountState?.authenticated && view !== 'auth') {
+            this.currentView = 'auth';
+            this.requestUpdate();
+            return;
+        }
         this.currentView = view;
         this.requestUpdate();
     }
@@ -737,16 +742,21 @@ export class CheatingDaddyApp extends LitElement {
         this.currentView = 'main';
     }
 
-    handleAuthComplete() {
+    handleAuthComplete(state = null) {
+        if (state) {
+            this._accountState = state;
+        }
         this._passwordRecoveryPending = false;
         // After successful sign-in/sign-up, go to onboarding (first time) or main
         cheatingDaddy.storage
             .getConfig()
             .then(config => {
                 this.currentView = config.onboarded ? 'main' : 'onboarding';
+                this.requestUpdate();
             })
             .catch(() => {
                 this.currentView = 'onboarding';
+                this.requestUpdate();
             });
     }
 
@@ -789,7 +799,7 @@ export class CheatingDaddyApp extends LitElement {
                 return html`
                     <auth-view
                         .initialMode=${this._passwordRecoveryPending ? 'update-password' : 'signin'}
-                        .onAuthenticated=${() => this.handleAuthComplete()}
+                        .onAuthenticated=${state => this.handleAuthComplete(state)}
                     ></auth-view>
                 `;
 
@@ -1020,6 +1030,10 @@ export class CheatingDaddyApp extends LitElement {
     }
 
     render() {
+        if (!this._accountState?.authenticated && this.currentView !== 'auth') {
+            this.currentView = 'auth';
+        }
+
         // Auth and Onboarding are fullscreen, no sidebar
         if (this.currentView === 'auth' || this.currentView === 'onboarding') {
             return html` <div class="fullscreen">${this.renderCurrentView()}</div> `;
